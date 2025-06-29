@@ -240,25 +240,37 @@ workflow NANOPATH {
 
     ch_versions = ch_versions.mix(MEDAKA_PASS.out.versions.first())
 
+    def blast_db_parent_path = file(params.blast_db).parent
+    def blast_db_name = file(params.blast_db).getBaseName()
+
     // run FULL_CLASSIFICATION if params.classification is "full"
     if(params.classification == "full"){
         FULL_CLASSIFICATION (
-            MEDAKA_PASS.out.consensus
+            MEDAKA_PASS.out.consensus,
+            params.kraken2_db,
+            params.seqmatch_db,
+            params.seqmatch_accession,
+            blast_db_parent_path,
+            blast_db_name
         )
         ch_join_results = FULL_CLASSIFICATION.out.log.groupTuple()
     } else if(params.classification == "blast"){
         BLAST_CLASSIFICATION (
-            MEDAKA_PASS.out.consensus
+            MEDAKA_PASS.out.consensus,
+            params.blast_db
         )
         ch_join_results = BLAST_CLASSIFICATION.out.log.groupTuple()
     } else if(params.classification == "seqmatch"){
         SEQMATCH_CLASSIFICATION (
-            MEDAKA_PASS.out.consensus
+            MEDAKA_PASS.out.consensus,
+            params.seqmatch_db,
+            params.seqmatch_accession
         )
         ch_join_results = SEQMATCH_CLASSIFICATION.out.log.groupTuple()
     } else {
         KRAKEN2_CLASSIFICATION (
-            MEDAKA_PASS.out.consensus
+            MEDAKA_PASS.out.consensus,
+            params.kraken2_db
         )
         ch_join_results = KRAKEN2_CLASSIFICATION.out.log.groupTuple()
     }
