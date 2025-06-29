@@ -24,7 +24,7 @@ process SAMPLESHEET_CHECK {
     def fastqDir = params.fastq_dir ? "--fastq_dir ${fastq_dir}" : ""
     def clinical = params.clinical ? "--clinical" : ""
     """
-    python check_samplesheet.py \\
+    python ${workflow.projectDir}/bin/check_samplesheet.py \\
         $samplesheet \\
         samplesheet.valid.csv \\
         $fastqDir \\
