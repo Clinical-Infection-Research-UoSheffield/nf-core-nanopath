@@ -276,7 +276,8 @@ workflow NANOPATH {
     }
 
     JOIN_RESULTS (
-        ch_join_results
+        ch_join_results,
+        params.taxonomy
     )
 
     GET_ABUNDANCE (

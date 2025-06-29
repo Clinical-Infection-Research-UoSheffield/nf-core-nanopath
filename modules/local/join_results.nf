@@ -9,6 +9,7 @@ process JOIN_RESULTS {
 
     input:
     tuple val(meta), path(logs)
+    path taxonomy
 
     output:
     tuple val(meta), path('*.nanoclust_out.txt'),                 emit: classification
@@ -16,7 +17,6 @@ process JOIN_RESULTS {
 
     script:
     def prefix = task.ext.prefix ?: "${meta.id}"
-    def taxonomy = params.taxonomy ?: ""
 
     if(params.classification=='full'){
         """
