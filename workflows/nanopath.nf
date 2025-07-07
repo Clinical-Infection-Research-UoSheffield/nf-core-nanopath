@@ -19,8 +19,11 @@ if (params.input) { ch_input = file(params.input) } else { exit 1, 'Input sample
 
 
 if(params.onGridion){
-        ch_metadata_files = Channel.fromPath(["$workflow.launchDir/../report*.html", "$workflow.launchDir/../final_summary*.txt"])
-    }
+    ch_metadata_files = Channel.fromPath([
+        "${params.fastq_dir}/../report*.html",
+        "${params.fastq_dir}/../final_summary*.txt"
+    ])
+}
 else if(params.report_file && params.summary_file){
     ch_metadata_files = Channel.fromPath([params.report_file, params.summary_file])
 }
@@ -307,10 +310,6 @@ workflow NANOPATH {
             ch_input
         )
     }
-    
-
-    
-    
 
     CUSTOM_DUMPSOFTWAREVERSIONS (
         ch_versions.unique().collectFile(name: 'collated_versions.yml')
