@@ -67,6 +67,7 @@ class RowChecker:
 
         """
         self._validate_row(row)
+        self._sanitise_row(row)
         self._validate_pair(row)
         self._create_fastq_path(row)
         if self.clinical:
@@ -95,6 +96,12 @@ class RowChecker:
         if not self.clinical and not self.fastq_dir:
             """Assert that the first FASTQ entry is non-empty and has the right format."""
             self._validate_fastq_format(row["fastq_1"])
+
+    def _sanitise_row(self, row):
+        """Remove commas from all string values in the row."""
+        for k in row:
+            if isinstance(row[k], str):
+                row[k] = row[k].replace(",", "")
 
     def _validate_fastq_format(self, filename):
         """Assert that a given filename has one of the expected FASTQ extensions."""
