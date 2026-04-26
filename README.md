@@ -6,9 +6,6 @@
 [![run with conda](http://img.shields.io/badge/run%20with-conda-3EB049?labelColor=000000&logo=anaconda)](https://docs.conda.io/en/latest/)
 [![run with docker](https://img.shields.io/badge/run%20with-docker-0db7ed?labelColor=000000&logo=docker)](https://www.docker.com/)
 [![run with singularity](https://img.shields.io/badge/run%20with-singularity-1d355c.svg?labelColor=000000)](https://sylabs.io/docs/)
-[![Launch on Nextflow Tower](https://img.shields.io/badge/Launch%20%F0%9F%9A%80-Nextflow%20Tower-%234256e7)](https://tower.nf/launch?pipeline=https://github.com/nf-core/nanopath)
-
-[![Get help on Slack](http://img.shields.io/badge/slack-nf--core%20%23nanopath-4A154B?labelColor=000000&logo=slack)](https://nfcore.slack.com/channels/nanopath)[![Follow on Twitter](http://img.shields.io/badge/twitter-%40nf__core-1DA1F2?labelColor=000000&logo=twitter)](https://twitter.com/nf_core)[![Follow on Mastodon](https://img.shields.io/badge/mastodon-nf__core-6364ff?labelColor=FFFFFF&logo=mastodon)](https://mstdn.science/@nf_core)[![Watch on YouTube](http://img.shields.io/badge/youtube-nf--core-FF0000?labelColor=000000&logo=youtube)](https://www.youtube.com/c/nf-core)
 
 ## Introduction
 
@@ -62,71 +59,143 @@
 > to set-up Nextflow. Make sure to [test your setup](https://nf-co.re/docs/usage/introduction#how-to-run-a-pipeline)
 > with `-profile test` before running the workflow on actual data.
 
-<!-- TODO nf-core: Describe the minimum required steps to execute the pipeline, e.g. how to prepare samplesheets.
-     Explain what rows and columns represent. For instance (please edit as appropriate):
+### Samplesheet preparation
 
-First, prepare a samplesheet with your input data that looks as follows:
+The pipeline accepts three input modes. Choose the one that matches your data setup.
 
-`samplesheet.csv`:
+#### Standard mode
+
+Prepare a CSV samplesheet with a `sample` column and a `fastq_1` column pointing to single-end Nanopore reads (`.fastq`, `.fastq.gz`, `.fq`, or `.fq.gz`):
 
 ```csv
-sample,fastq_1,fastq_2
-CONTROL_REP1,AEG588A1_S1_L002_R1_001.fastq.gz,AEG588A1_S1_L002_R2_001.fastq.gz
+sample,fastq_1
+SAMPLE1,/path/to/SAMPLE1.fastq.gz
+SAMPLE2,/path/to/SAMPLE2.fastq.gz
 ```
 
-Each row represents a fastq file (single-end) or a pair of fastq files (paired end).
-
--->
-
-Now, you can run the pipeline using:
-
-<!-- TODO nf-core: update the following command to include all required parameters for a minimal example -->
+Run with:
 
 ```bash
 nextflow run nf-core/nanopath \
-   -profile <docker/singularity/.../institute> \
+   -profile <docker/singularity/conda> \
    --input samplesheet.csv \
-   --outdir <OUTDIR>
+   --outdir <OUTDIR> \
+   --classification kraken2 \
+   --kraken2_db /path/to/kraken2_db \
+   --taxonomy /path/to/taxonomy.tsv
 ```
+
+#### FastQ directory mode
+
+If your reads are stored in per-barcode subdirectories (e.g. directly from a GridION/MinION run before manual concatenation), supply `--fastq_dir` pointing to the parent directory and a samplesheet with `sample` and `filename` columns:
+
+```csv
+sample,filename
+SAMPLE1,barcode01
+SAMPLE2,barcode02
+```
+
+The `CAT_FASTQS` step will automatically find and concatenate all FASTQ files inside each `barcode*` subdirectory.
+
+```bash
+nextflow run nf-core/nanopath \
+   -profile <docker/singularity/conda> \
+   --input samplesheet.csv \
+   --fastq_dir /path/to/run_dir/fastq_pass \
+   --outdir <OUTDIR> \
+   --classification kraken2 \
+   --kraken2_db /path/to/kraken2_db \
+   --taxonomy /path/to/taxonomy.tsv
+```
+
+#### Clinical mode
+
+For clinical sequencing runs with barcoded patient samples, use `--clinical` with a samplesheet containing `Specimen Number`, `Barcode`, `Status`, and `Assay` columns:
+
+```csv
+Specimen Number,Barcode,Status,Assay
+PATIENT001,barcode01,active,16S
+PATIENT002,barcode02,active,ITS2
+PATIENT003,barcode03,discontinued,16S
+```
+
+- **Barcode** must follow the format `barcode01`–`barcode100`.
+- **Status = discontinued** samples receive a report page noting no result, but classification is skipped. Any other status value is treated as normal.
+- **Assay** must be `16S` (bacterial) or `ITS2` (fungal); this drives fragment length settings in the consensus polishing step.
+
+Clinical mode is typically combined with `--fastq_dir` (or `--onGridion`) and `--generateReports`:
+
+```bash
+nextflow run nf-core/nanopath \
+   -profile <docker/singularity/conda> \
+   --input clinical_samplesheet.csv \
+   --fastq_dir /path/to/run_dir/fastq_pass \
+   --clinical \
+   --generateReports \
+   --outdir <OUTDIR> \
+   --classification kraken2 \
+   --kraken2_db /path/to/kraken2_db \
+   --taxonomy /path/to/taxonomy.tsv
+```
+
+### Key parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--classification` | `kraken2` | Classification tool: `kraken2`, `blast`, `seqmatch`, or `full` (all three) |
+| `--kraken2_db` | — | Path to a Kraken2 database directory |
+| `--blast_db` | — | Path to a BLAST database prefix (e.g. `/path/to/db/16S_ribosomal_RNA`) |
+| `--seqmatch_db` | — | Path to an RDP SeqMatch database file |
+| `--seqmatch_accession` | — | Path to an RDP accession-to-taxonomy mapping file |
+| `--taxonomy` | — | Path to a tab-delimited taxonomy file used to annotate classification results |
+| `--remove_unclassified` | `false` | Pre-filter reads with Kraken2 before clustering to remove non-target sequences |
+| `--reclassifyOnFail` | `false` | Fall back to SeqMatch if Kraken2 does not reach species level |
+| `--umap_set_size` | `100000` | Max reads subsetted per sample for UMAP/HDBSCAN clustering |
+| `--min_read_length` | `1400` | Minimum read length filter applied by FASTP (bp) |
+| `--max_read_length` | `1700` | Maximum read length filter applied by FASTP (bp) |
+| `--avg_amplicon_size` | `1.5k` | Expected amplicon size passed to Canu for error correction |
+| `--clinical` | `false` | Enable clinical mode (alternative samplesheet format, per-patient reports) |
+| `--generateReports` | `false` | Generate per-sample HTML patient reports (requires `--clinical`) |
+| `--onGridion` | `false` | Auto-discover run metadata (`kit`, `run_id`, `seq_start`) from GridION output files located one level above `--fastq_dir` |
+| `--report_file` | — | Manual alternative to `--onGridion`: path to the GridION `report*.html` file. Must be provided together with `--summary_file`. |
+| `--summary_file` | — | Manual alternative to `--onGridion`: path to the GridION `final_summary*.txt` file. Must be provided together with `--report_file`. Both files are parsed to extract the sequencing kit, run ID and start time used in patient reports. |
+
+For advanced clustering, polishing and Canu parameters, see the [full usage documentation](docs/usage.md).
 
 > **Warning:**
 > Please provide pipeline parameters via the CLI or Nextflow `-params-file` option. Custom config files including those
 > provided by the `-c` Nextflow option can be used to provide any configuration _**except for parameters**_;
 > see [docs](https://nf-co.re/usage/configuration#custom-configuration-files).
 
-For more details, please refer to the [usage documentation](https://nf-co.re/nanopath/usage) and the [parameter documentation](https://nf-co.re/nanopath/parameters).
-
 ## Pipeline output
 
-To see the the results of a test run with a full size dataset refer to the [results](https://nf-co.re/nanopath/results) tab on the nf-core website pipeline page.
-For more details about the output files and reports, please refer to the
-[output documentation](https://nf-co.re/nanopath/output).
+All results are written to the directory specified with `--outdir`. The table below summarises the main output directories. For full file-level documentation see [docs/output.md](docs/output.md).
+
+| Directory | Description |
+|-----------|-------------|
+| `cat/` | Per-barcode concatenated FASTQ files (only produced when `--fastq_dir` is used) |
+| `fastqc/` | FastQC HTML quality reports and zip archives on the raw input reads |
+| `fastp/` | Length-filtered reads (`.fastq.gz`) and per-sample JSON QC summaries |
+| `read_clustering/` | HDBSCAN cluster assignment tables (`*_hdbscan_output.tsv`) and UMAP scatter plots (`*_hdbscan_output.png`) |
+| `canu_correction/` | Canu error-correction reports per cluster |
+| `draft_selection/` | Best representative (draft) read FASTA per cluster, selected by FastANI |
+| `racon_pass/` | Racon-polished consensus FASTA per cluster |
+| `medaka_pass/` | Final Medaka-polished consensus FASTA per cluster |
+| `*_classification/` | Per-cluster classification output CSV and log files (directory name reflects chosen classifier); useful for detailed inspection of individual cluster results |
+| `join_results/` | Per-sample joined classification table (`*.nanoclust_out.txt`) combining all cluster results |
+| **`get_abundance/`** ⭐ | **Primary quantitative output** — relative abundance tables at species (`*_S.csv`), genus (`*_G.csv`), family (`*_F.csv`) and order (`*_O.csv`) level |
+| **`generate_reports/`** ⭐ | **Per-patient clinical HTML reports** (`patient_report_*.html`; clinical mode only — requires `--clinical --generateReports`) |
+| `multiqc/` | Aggregated MultiQC HTML report covering FastQC results and pipeline software versions |
+| `pipeline_info/` | Nextflow execution report, timeline, trace, DAG and collated software version YAML |
 
 ## Credits
 
-nf-core/nanopath was originally written by Magdalena Dabrowska.
-
-We thank the following people for their extensive assistance in the development of this pipeline:
-
-<!-- TODO nf-core: If applicable, make list of people who have also contributed -->
-
-## Contributions and Support
-
-If you would like to contribute to this pipeline, please see the [contributing guidelines](.github/CONTRIBUTING.md).
-
-For further information or help, don't hesitate to get in touch on the [Slack `#nanopath` channel](https://nfcore.slack.com/channels/nanopath) (you can join with [this invite](https://nf-co.re/join/slack)).
+nf-core/nanopath was originally written by Magdalena Dabrowska as a project within the Universiy of Sheffield.
 
 ## Citations
 
 <!-- TODO nf-core: Add citation for pipeline after first release. Uncomment lines below and update Zenodo doi and badge at the top of this file. -->
 <!-- If you use  nf-core/nanopath for your analysis, please cite it using the following doi: [10.5281/zenodo.XXXXXX](https://doi.org/10.5281/zenodo.XXXXXX) -->
-
-<!-- TODO nf-core: Add bibliography of tools and data used in your pipeline -->
-
-An extensive list of references for the tools used by the pipeline can be found in the [`CITATIONS.md`](CITATIONS.md) file.
-
-You can cite the `nf-core` publication as follows:
-
 > **The nf-core framework for community-curated bioinformatics pipelines.**
 >
 > Philip Ewels, Alexander Peltzer, Sven Fillinger, Harshil Patel, Johannes Alneberg, Andreas Wilm, Maxime Ulysse Garcia, Paolo Di Tommaso & Sven Nahnsen.
