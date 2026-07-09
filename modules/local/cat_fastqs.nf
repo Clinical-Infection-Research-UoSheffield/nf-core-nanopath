@@ -20,12 +20,12 @@ process CAT_FASTQS {
     """
     for i in ${fastq_dir}/barcode*; do
         barcode=\$(basename \$i)
-        output_file=\$barcode\\.fastq.gz
-    
-        if find \$i -name '*.fastq.gz' -type f -print -quit 2>/dev/null | grep -q '.'; then
+        output_file="\${barcode}.fastq.gz"
+
+        if ls \$i/*.fastq.gz >/dev/null 2>&1; then
             cat \$i/*.fastq.gz > \$output_file
-        elif find \$i -name '*.fastq' -type f -print -quit 2>/dev/null | grep -q '.'; then
-            cat \$i/*.fastq | gzip -c --best > \$output_file
+        elif ls \$i/*.fastq >/dev/null 2>&1; then
+            cat \$i/*.fastq | gzip -c > \$output_file
         fi
     done
     echo "${outdir}"
