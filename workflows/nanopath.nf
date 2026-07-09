@@ -257,12 +257,14 @@ workflow NANOPATH {
             blast_db_name
         )
         ch_join_results = FULL_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = FULL_CLASSIFICATION.out.classification.groupTuple()
     } else if(params.classification == "blast"){
         BLAST_CLASSIFICATION (
             MEDAKA_PASS.out.consensus,
             params.blast_db
         )
         ch_join_results = BLAST_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = BLAST_CLASSIFICATION.out.classification.groupTuple()
     } else if(params.classification == "seqmatch"){
         SEQMATCH_CLASSIFICATION (
             MEDAKA_PASS.out.consensus,
@@ -270,12 +272,14 @@ workflow NANOPATH {
             params.seqmatch_accession
         )
         ch_join_results = SEQMATCH_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = SEQMATCH_CLASSIFICATION.out.classification.groupTuple()
     } else {
         KRAKEN2_CLASSIFICATION (
             MEDAKA_PASS.out.consensus,
             params.kraken2_db
         )
         ch_join_results = KRAKEN2_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = KRAKEN2_CLASSIFICATION.out.classification.groupTuple()
     }
 
     JOIN_RESULTS (
@@ -300,7 +304,10 @@ workflow NANOPATH {
                 return it[1]
         }.set { ch_controls }
 
-        ch_reporting = GET_ABUNDANCE.out.species_results.join(FASTP.out.reads, by: [0])
+        ch_reporting = GET_ABUNDANCE.out.species_results
+            .join(FASTP.out.reads, by: [0])
+            .join(ch_hit_details, by: [0])
+            .join(GET_ABUNDANCE.out.chosen, by: [0])
 
         GENERATE_REPORTS(
             ch_reporting,

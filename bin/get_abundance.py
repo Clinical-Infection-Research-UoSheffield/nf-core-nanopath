@@ -109,6 +109,45 @@ def choose_classification(dataframe):
     else:
         return dataframe
 
+def choose_row_classifier(row):
+    """Return which classifier won for a single cluster row of the full-mode table.
+
+    Mirrors exactly the per-row decision in choose_classification so the report can be
+    filtered to the same winning classifier that produced the reported abundance. The row
+    is a positional Series from the id-dropped full-mode dataframe. Column layout:
+    0-3 cluster metadata, 4-11 kraken2 block, 12-19 seqmatch block, 20-27 blast block
+    (position 6 is the kraken2 class_level; positions 8:12 / 16:20 / 24: are the
+    species/genus/family/order columns of each classifier).
+    """
+    if row.iloc[6] == "S":
+        return "kraken2"
+    classification_score = {
+        "kraken2": sum(row.notna()[8:12]),
+        "blast": sum(row.notna()[24:]),
+        "seqmatch": sum(row.notna()[16:20]),
+    }
+    return max(classification_score, key=classification_score.get)
+
+
+def write_chosen_classifier(infile, prefix):
+    """Write a cluster -> winning classifier mapping used to filter the report hit details.
+
+    Only meaningful in 'full' mode, where three classifiers compete per cluster. In the
+    single-classifier modes the file is written with a header only (the report then falls
+    back to the sole classifier present for each cluster).
+    """
+    raw = pd.read_csv(infile, index_col=False, sep=';')
+    rows = []
+    # id column + >13 classifier columns == full mode (matches choose_classification)
+    if raw.shape[1] > 14:
+        ids = raw.iloc[:, 0]
+        data1 = raw.iloc[:, 1:]
+        for i, (_, row) in enumerate(data1.iterrows()):
+            rows.append({"cluster": ids.iloc[i], "classifier": choose_row_classifier(row)})
+    pd.DataFrame(rows, columns=["cluster", "classifier"]).to_csv(
+        prefix + "_chosen_classifier.csv", index=False)
+
+
 def merge_abundance(dfs, data, tax_level):
     df_final = reduce(lambda left, right: pd.merge(left, right, on='taxid', how='outer').fillna(0), dfs)
     all_tax = []
@@ -152,6 +191,8 @@ def get_abundance(names,paths,tax_level, outfile):
 
 
 def main(args):
+
+    write_chosen_classifier(args.infile, args.prefix)
 
     for level in ["G", "S", "O", "F"]:
         get_abundance(args.prefix, args.infile, level, args.outfile)

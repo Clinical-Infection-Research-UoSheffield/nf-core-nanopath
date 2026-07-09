@@ -8,15 +8,16 @@ process GENERATE_REPORTS {
         'docker.io/mbdabrowska1/generate-reports:1.0' }"
 
     input:
-    tuple val(meta), path(sample_result), path(fastp_results)
+    tuple val(meta), path(sample_result), path(fastp_results), path(hit_details), path(chosen_classifier)
     val(positive_control)
     val(negative_control)
     tuple val(kit), val(run_id), val(seq_start)
     path(samplesheet)
 
     output:
-    tuple val(meta), path("patient_report*.html"), emit: report
-    path "versions.yml",                           emit: versions
+    tuple val(meta), path("patient_report*.html"),   emit: report
+    tuple val(meta), path("hit_details_*.csv"),       emit: hit_details_csv, optional: true
+    path "versions.yml",                              emit: versions
 
     script:
     def revision=workflow.revision
@@ -46,7 +47,9 @@ process GENERATE_REPORTS {
         --report_template ${report_template} \
         --logo ${logo} \
         --run_id "${run_id}" \
-        --seq_start "${seq_start}"
+        --seq_start "${seq_start}" \
+        --hit_details . \
+        --chosen_classifier ${chosen_classifier}
         
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
