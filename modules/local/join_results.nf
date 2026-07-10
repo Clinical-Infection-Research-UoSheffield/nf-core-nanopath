@@ -42,6 +42,11 @@ process JOIN_RESULTS {
         done
         sed -i 's/.\$//' ${prefix}.nanoclust_out.txt
 
+        # This process finishes in milliseconds; give Nextflow's resource sampler time to
+        # read /proc/<pid> before the task exits, otherwise .command.run crashes with a
+        # 'set -u' unbound-variable error under Apptainer.
+        sleep 3
+
         cat <<-END_VERSIONS > versions.yml
         "${task.process}":
             cat: \$(cat --version | head -n1 | cut -f 4 -d ' ')
