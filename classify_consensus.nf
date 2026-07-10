@@ -4,8 +4,8 @@
  * skipping read clustering / Canu / Racon / Medaka. It reuses the real pipeline modules, so
  * identification, the QC report, etc. are identical to a normal run.
  *
- * Run from the repo root, e.g.:
- *   nextflow run classify_consensus.nf -profile docker \
+ * Run from the repo root, e.g. (use -profile singularity on an HPC, -profile docker on a GridION):
+ *   nextflow run classify_consensus.nf -profile singularity \
  *       --classification full \            # REQUIRED: otherwise defaults to kraken2-only
  *       --consensus my_consensus.fasta \
  *       --barcode barcode01 \
@@ -21,6 +21,8 @@
  * run it once per FASTA (or extend the input channel below).
  */
 nextflow.enable.dsl = 2
+
+params.fake_reads = 100   // stand-in read count for the single cluster
 
 include { FULL_CLASSIFICATION } from './modules/local/full_classification'
 include { JOIN_RESULTS        } from './modules/local/join_results'
