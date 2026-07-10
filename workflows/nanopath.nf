@@ -205,7 +205,7 @@ workflow NANOPATH {
 
     SPLIT_CLUSTERS.out.reads.map {
         meta, reads, log, cluster_id ->
-            clusters = cluster_id.split(" ").collect { it.toInteger() }
+            clusters = cluster_id.tokenize().collect { it.toInteger() }
             [meta, reads, log, clusters]
     }.transpose().set {ch_split_cluster}
 
