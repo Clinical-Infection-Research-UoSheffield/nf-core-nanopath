@@ -131,9 +131,11 @@ workflow NANOPATH {
         PROCESS_METADATA (
             ch_metadata_files.collect()
         )
-        ch_meta_final = PROCESS_METADATA.out.metadata
+        // .first() turns this into a value channel so it is reused for every barcode
+        // (otherwise GENERATE_REPORTS, having two queue inputs, runs only once)
+        ch_meta_final = PROCESS_METADATA.out.metadata.first()
     } else {
-        ch_meta_final = Channel.of([params.kit, params.run_id, params.seq_start])
+        ch_meta_final = Channel.value([params.kit, params.run_id, params.seq_start])
     }
 
     FASTP (
