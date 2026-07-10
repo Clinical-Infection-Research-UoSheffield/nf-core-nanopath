@@ -282,6 +282,10 @@ workflow NANOPATH {
         ch_hit_details  = KRAKEN2_CLASSIFICATION.out.classification.groupTuple()
     }
 
+    // classification.groupTuple() nests each cluster's file list, giving a list-of-lists;
+    // flatten to a single list of paths so GENERATE_REPORTS' `path(hit_details)` accepts it
+    ch_hit_details = ch_hit_details.map { meta, files -> [ meta, files.flatten() ] }
+
     JOIN_RESULTS (
         ch_join_results,
         params.taxonomy

@@ -22,8 +22,8 @@ process GENERATE_REPORTS {
     script:
     def revision=workflow.revision
     def clustering_size=params.umap_set_size
-    def report_template="$baseDir/assets/UoS_report_template.html"
-    def logo="$baseDir/assets/UoS_white_logo.txt"
+    def report_template="$projectDir/assets/UoS_report_template.html"
+    def logo="$projectDir/assets/UoS_white_logo.txt"
     def negative="${negative_control}" ? "${negative_control}" : "[None]"
     def positive="${positive_control}" ? "${positive_control}" : "[None]"
     """
