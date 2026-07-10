@@ -563,16 +563,16 @@ QC_CSS = """
 .qc .lamp{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle}
 .qc .g .lamp{background:var(--g)} .qc .a .lamp{background:var(--a)} .qc .r .lamp{background:var(--r)}
 .qc a.lamp-link{text-decoration:none} .qc a.lamp-link:hover .lamp{transform:scale(1.3)}
-.qc .qc-summary{margin:4px 0 8px;font-size:15px}
-.qc .qc-summary span{display:inline-block;margin-right:24px}
-.qc .qc-summary .lamp{margin-right:7px}
 .qc .qc-legend{font-size:12px;color:#5c6773;margin:0 0 12px}
 .qc .qc-legend i{width:9px;height:9px;border-radius:50%;display:inline-block;vertical-align:middle;margin:0 4px 0 14px}
 .qc table{border-collapse:collapse;margin:0 0 1rem;font-size:14px}
 .qc>table{width:100%}
 .qc th,.qc td{padding:.5rem .75rem;border:1px solid #dee2e6;text-align:left;vertical-align:middle}
 .qc thead th{background-color:var(--brand-primary,#0084a9);color:#fff;font-weight:700;border-color:var(--brand-primary,#0084a9)}
+.qc thead th a{color:#fff;text-decoration:underline}
 .qc th.c,.qc td.c{text-align:center}
+.qc-explain h4{margin:14px 0 3px;font-size:14px} .qc-explain p{margin:0 0 4px}
+.qc-explain{font-size:13.5px}
 .qc .sci{font-style:italic}
 .qc .qc-detail{display:none}
 .qc .qc-detail:target{display:table-row}
@@ -609,15 +609,11 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
     """Build the QC traffic-light section HTML from parsed cluster records."""
     neg_keys = {_species_key(s) for s in (neg_species or []) if _species_key(s)}
 
-    # the positive-control spike is checked across ALL clusters, regardless of size
-    pos = marinobacter_present(clusters)
-
     # show the most abundant clusters first, limited to the previous top-N display
     ordered = sorted(clusters, key=lambda c: -_cluster_reads(c, cluster_info))
     shown = ordered[:top_clusters] if top_clusters else ordered
 
     body = []
-    flagged_total = 0
     for cid in shown:
         recs = clusters[cid]
         info = cluster_info.get(str(cid), {})
@@ -641,40 +637,27 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
                 sc=cell(lights["score"]), ng=cell(lights["negctrl"])))
 
         if flagged:
-            flagged_total += 1
             body.append(_build_detail(cid, anchor, recs, a, lights))   # dropdown right below its row
 
     if not body:
         return ""
 
-    n = len(shown)
-    overall = "green" if flagged_total == 0 else "amber" if flagged_total < n else "red"
-    overall_txt = ("all clusters confident" if flagged_total == 0
-                   else "{0} of {1} clusters flagged".format(flagged_total, n))
-    pos_level = "green" if pos else "red"
-    pos_txt = ("<i>{0}</i> present".format(_esc(POS_CONTROL_SPECIES)) if pos
-               else "<i>{0}</i> NOT detected".format(_esc(POS_CONTROL_SPECIES)))
-
-    summary = (
-        '<div class="qc-summary">'
-        '<span class="{ol}"><span class="lamp"></span><b>Overall:</b> {ot}</span>'
-        '<span class="{pl}"><span class="lamp"></span><b>Positive control:</b> {pt}</span>'
-        '</div>'.format(ol=_map3(overall), ot=overall_txt, pl=_map3(pos_level), pt=pos_txt))
-
     legend = ('<p class="qc-legend">Per-cluster checks &mdash; '
               '<i style="background:#16a34a"></i>confident '
               '<i style="background:#d97706"></i>interpret with care '
               '<i style="background:#dc2626"></i>unreliable / QC concern. '
-              'Click an amber/red light for detail.</p>')
+              'Click an amber/red light for detail; click a column heading for how it is scored.</p>')
 
     table = (
         '<table>'
         '<thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads (%)</th>'
-        '<th class="c">Agreement</th><th class="c">Close hits</th>'
-        '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
+        '<th class="c"><a href="#qcx-agreement">Agreement</a></th>'
+        '<th class="c"><a href="#qcx-close">Close hits</a></th>'
+        '<th class="c"><a href="#qcx-score">Abs. score</a></th>'
+        '<th class="c"><a href="#qcx-negctrl">Neg. control</a></th></tr></thead>'
         '<tbody>{0}</tbody></table>'.format("".join(body)))
 
-    return QC_CSS + '<div class="qc">' + summary + legend + table + '</div>'
+    return QC_CSS + '<div class="qc">' + legend + table + '</div>'
 
 
 def _map3(level):
@@ -734,6 +717,54 @@ def _build_detail(cid, anchor, recs, a, lights):
                 a=anchor, c=_esc(cid), reasons=reason_html, mini=mini))
 
 
+def build_qc_explanations():
+    """Reference block explaining each QC check; the table column headings link here."""
+    return (
+        '<div class="qc-explain">'
+        '<h4 id="qcx-agreement">Agreement</h4>'
+        '<p>Do the three classifiers name the same species for this cluster? '
+        '<b>Green</b> = all agree; <b>amber</b> = one dissents; <b>red</b> = all differ. '
+        'Compared at species level, so different strains of one species (for example several '
+        '<i>Klebsiella pneumoniae</i> reference strains) count as agreement.</p>'
+        '<h4 id="qcx-close">Close hits</h4>'
+        '<p>Is the top hit clearly ahead of the next <i>different</i> species? '
+        '<b>Amber/red</b> when a different species sits within the near-tie margin, so the call '
+        'could plausibly be either. Margins: BLAST within about 1% identity (red within 0.3%); '
+        'SeqMatch within about 0.02 S_ab (red within 0.005).</p>'
+        '<h4 id="qcx-score">Absolute score</h4>'
+        '<p>How strong is the best hit on its own? BLAST % identity: '
+        '<b>green</b> at least 99%, <b>amber</b> 98&ndash;99%, <b>red</b> below 98%. '
+        'SeqMatch S_ab: <b>green</b> at least 0.95, <b>amber</b> 0.90&ndash;0.95, <b>red</b> below 0.90.</p>'
+        '<h4 id="qcx-negctrl">Negative control</h4>'
+        '<p>Is the called species also detected in the negative control for this run? '
+        '<b>Red</b> if it is &mdash; likely reagent or environmental contamination rather than a true finding.</p>'
+        '<h4>How each classifier scores</h4>'
+        '<p><b>BLAST</b> &mdash; % identity of the best alignment to the 16S database '
+        '(higher is better; a confident species match is usually at least 99%). '
+        '<b>SeqMatch (RDP)</b> &mdash; S_ab similarity score from 0 to 1 (higher is better). '
+        '<b>kraken2</b> &mdash; a lowest-common-ancestor assignment built from shared k-mers; '
+        'it returns a single taxon with no numeric score, so it often stops at genus and shows '
+        '&ldquo;-&rdquo; in the score column.</p>'
+        '</div>')
+
+
+def internal_control_html(hit_details_dir, name=POS_CONTROL_SPECIES):
+    """Internal spike-control status line for the Run QC section."""
+    clusters = collect_cluster_records(hit_details_dir)
+    if not clusters:
+        return ""
+    present = marinobacter_present(clusters, name)
+    color = "#16a34a" if present else "#dc2626"
+    dot = ('<span style="display:inline-block;width:12px;height:12px;border-radius:50%;'
+           'background:{0};vertical-align:middle;margin-right:8px"></span>'.format(color))
+    if present:
+        msg = "Internal spike control <i>{0}</i> detected.".format(_esc(name))
+    else:
+        msg = ('Internal spike control <i>{0}</i> <font color="red">NOT detected &mdash; the run '
+               'may have failed and results should be treated with caution</font>.'.format(_esc(name)))
+    return '<br/>\n<b>INTERNAL CONTROL</b><br/>\n{0}{1}'.format(dot, msg)
+
+
 def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species=None, top_n=TOP_N_HITS):
     """Add the per-cluster QC traffic-light section to the report."""
     clusters = collect_cluster_records(hit_details_dir, top_n)
@@ -746,6 +777,7 @@ def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species
     section = reprt.add_section()
     section.markdown("<br/>\n### Sequence identification & QC\n")
     section.markdown(html)
+    section.markdown(build_qc_explanations())
 
 
 def parse_args():
@@ -961,6 +993,11 @@ def main(args):
             section.markdown('''
             No species detected in positive control.
             ''')
+
+        # Internal spike control (Marinobacter nauticus) added to every sample
+        internal = internal_control_html(args.hit_details)
+        if internal:
+            section.markdown(internal)
 
         if comment == 1:
             section.markdown('''
