@@ -568,11 +568,16 @@ QC_CSS = """
 .qc .qc-summary .lamp{margin-right:7px}
 .qc .qc-legend{font-size:12px;color:#5c6773;margin:0 0 12px}
 .qc .qc-legend i{width:9px;height:9px;border-radius:50%;display:inline-block;vertical-align:middle;margin:0 4px 0 14px}
-.qc td.c,.qc th.c{text-align:center}
+.qc table{border-collapse:collapse;margin:0 0 1rem;font-size:14px}
+.qc>table{width:100%}
+.qc th,.qc td{padding:.5rem .75rem;border:1px solid #dee2e6;text-align:left;vertical-align:middle}
+.qc thead th{background-color:var(--brand-primary,#0084a9);color:#fff;font-weight:700;border-color:var(--brand-primary,#0084a9)}
+.qc th.c,.qc td.c{text-align:center}
 .qc .sci{font-style:italic}
 .qc .qc-detail{display:none}
 .qc .qc-detail:target{display:table-row}
 .qc .qc-detail>td{background:#f6f8fa}
+.qc .qc-detail table{margin:8px 0 2px}
 .qc .reason{margin:2px 0 8px} .qc .reason .lamp{margin-right:8px}
 </style>
 """
@@ -663,7 +668,7 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
               'Click an amber/red light for detail.</p>')
 
     table = (
-        '<table border="1" class="dataframe">'
+        '<table>'
         '<thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads (%)</th>'
         '<th class="c">Agreement</th><th class="c">Close hits</th>'
         '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
@@ -720,7 +725,7 @@ def _build_detail(cid, anchor, recs, a, lights):
                 '<tr><td>{lab}</td><td><span class="sci">{sp}</span></td>'
                 '<td class="c">{sc}</td></tr>'.format(
                     lab=label if i == 0 else "", sp=_esc(r["species"]), sc=score))
-    mini = ('<table border="1" class="dataframe"><thead><tr><th>Classifier</th><th>Hit</th>'
+    mini = ('<table><thead><tr><th>Classifier</th><th>Hit</th>'
             '<th class="c">Score</th></tr></thead><tbody>{0}</tbody></table>'.format("".join(mini_rows))
             if mini_rows else "")
 
