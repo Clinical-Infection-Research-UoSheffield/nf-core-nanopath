@@ -395,7 +395,7 @@ QC_BLAST_CLOSE_RED = 0.3
 QC_SEQMATCH_CLOSE_AMBER = 0.02  # top1 - top2 (S_ab)
 QC_SEQMATCH_CLOSE_RED = 0.005
 POS_CONTROL_SPECIES = "Marinobacter nauticus"   # spiked into every sample
-SHOW_TOP_N_CLUSTERS = 3   # matches the previous report's top-3 abundance display; None = show all
+SHOW_MIN_ABUNDANCE = 5.0   # only show clusters with >= this % of reads (unclassified clusters hidden too)
 
 _WIN_TOKEN = {"BLAST": "blast", "SeqMatch": "seqmatch", "Kraken2 (LCA)": "kraken2"}
 _LEVEL_RANK = {"green": 0, "amber": 1, "red": 2}
@@ -569,10 +569,11 @@ QC_CSS = """
 .qc>table{width:100%}
 .qc th,.qc td{padding:.5rem .75rem;border:1px solid #dee2e6;text-align:left;vertical-align:middle}
 .qc thead th{background-color:var(--brand-primary,#0084a9);color:#fff;font-weight:700;border-color:var(--brand-primary,#0084a9)}
-.qc thead th a{color:#fff;text-decoration:underline}
 .qc th.c,.qc td.c{text-align:center}
-.qc-explain h4{margin:14px 0 3px;font-size:14px} .qc-explain p{margin:0 0 4px}
-.qc-explain{font-size:13.5px}
+.qc-explain{font-size:13.5px;border:1px solid #dee2e6;border-radius:6px;padding:6px 12px;margin:8px 0 14px}
+.qc-explain>summary{cursor:pointer;font-weight:700;color:var(--brand-primary,#0084a9)}
+.qc-explain h4{margin:12px 0 2px;font-size:14px;font-weight:700}
+.qc-explain p{margin:0 0 4px}
 .qc .sci{font-style:italic}
 .qc .qc-detail{display:none}
 .qc .qc-detail:target{display:table-row}
@@ -605,13 +606,22 @@ def _cluster_reads(cid, cluster_info):
         return 0.0
 
 
-def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_CLUSTERS):
+def _cluster_abundance(cid, cluster_info):
+    try:
+        return float(cluster_info.get(str(cid), {}).get("rel_abundance") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_ABUNDANCE):
     """Build the QC traffic-light section HTML from parsed cluster records."""
     neg_keys = {_species_key(s) for s in (neg_species or []) if _species_key(s)}
 
-    # show the most abundant clusters first, limited to the previous top-N display
+    # most abundant first, keeping only clusters at or above the minimum abundance
     ordered = sorted(clusters, key=lambda c: -_cluster_reads(c, cluster_info))
-    shown = ordered[:top_clusters] if top_clusters else ordered
+    shown = [c for c in ordered if _cluster_abundance(c, cluster_info) >= min_abundance]
+    if not shown and ordered:
+        shown = ordered[:1]   # never leave the identification blank
 
     body = []
     for cid in shown:
@@ -619,6 +629,8 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
         info = cluster_info.get(str(cid), {})
         winner_token = _WIN_TOKEN.get(info.get("classifier", ""))
         a = assess_cluster(recs, winner_token, neg_keys)
+        if _is_unclassified(a["call_species"]):
+            continue   # unclassified clusters are not shown
         lights = {k: a[k] for k in ("agreement", "close", "score", "negctrl")}
         flagged = any(v != "green" for v in lights.values())
         anchor = "qc-{0}".format(cid)
@@ -646,15 +658,13 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
               '<i style="background:#16a34a"></i>confident '
               '<i style="background:#d97706"></i>interpret with care '
               '<i style="background:#dc2626"></i>unreliable / QC concern. '
-              'Click an amber/red light for detail; click a column heading for how it is scored.</p>')
+              'Click an amber/red light for detail; see "Details of the Quality Metrics" below for scoring.</p>')
 
     table = (
         '<table>'
         '<thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads (%)</th>'
-        '<th class="c"><a href="#qcx-agreement">Agreement</a></th>'
-        '<th class="c"><a href="#qcx-close">Close hits</a></th>'
-        '<th class="c"><a href="#qcx-score">Abs. score</a></th>'
-        '<th class="c"><a href="#qcx-negctrl">Neg. control</a></th></tr></thead>'
+        '<th class="c">Agreement</th><th class="c">Close hits</th>'
+        '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
         '<tbody>{0}</tbody></table>'.format("".join(body)))
 
     return QC_CSS + '<div class="qc">' + legend + table + '</div>'
@@ -718,24 +728,24 @@ def _build_detail(cid, anchor, recs, a, lights):
 
 
 def build_qc_explanations():
-    """Reference block explaining each QC check; the table column headings link here."""
+    """Collapsible reference explaining each QC check and how each classifier scores."""
     return (
-        '<div class="qc-explain">'
-        '<h4 id="qcx-agreement">Agreement</h4>'
+        '<details class="qc-explain"><summary>Details of the Quality Metrics</summary>'
+        '<h4>Agreement</h4>'
         '<p>Do the three classifiers name the same species for this cluster? '
         '<b>Green</b> = all agree; <b>amber</b> = one dissents; <b>red</b> = all differ. '
         'Compared at species level, so different strains of one species (for example several '
         '<i>Klebsiella pneumoniae</i> reference strains) count as agreement.</p>'
-        '<h4 id="qcx-close">Close hits</h4>'
+        '<h4>Close hits</h4>'
         '<p>Is the top hit clearly ahead of the next <i>different</i> species? '
         '<b>Amber/red</b> when a different species sits within the near-tie margin, so the call '
         'could plausibly be either. Margins: BLAST within about 1% identity (red within 0.3%); '
         'SeqMatch within about 0.02 S_ab (red within 0.005).</p>'
-        '<h4 id="qcx-score">Absolute score</h4>'
+        '<h4>Absolute score</h4>'
         '<p>How strong is the best hit on its own? BLAST % identity: '
         '<b>green</b> at least 99%, <b>amber</b> 98&ndash;99%, <b>red</b> below 98%. '
         'SeqMatch S_ab: <b>green</b> at least 0.95, <b>amber</b> 0.90&ndash;0.95, <b>red</b> below 0.90.</p>'
-        '<h4 id="qcx-negctrl">Negative control</h4>'
+        '<h4>Negative control</h4>'
         '<p>Is the called species also detected in the negative control for this run? '
         '<b>Red</b> if it is &mdash; likely reagent or environmental contamination rather than a true finding.</p>'
         '<h4>How each classifier scores</h4>'
@@ -745,7 +755,7 @@ def build_qc_explanations():
         '<b>kraken2</b> &mdash; a lowest-common-ancestor assignment built from shared k-mers; '
         'it returns a single taxon with no numeric score, so it often stops at genus and shows '
         '&ldquo;-&rdquo; in the score column.</p>'
-        '</div>')
+        '</details>')
 
 
 def internal_control_html(hit_details_dir, name=POS_CONTROL_SPECIES):
