@@ -3,9 +3,13 @@ process JOIN_RESULTS {
     label 'process_single'
 
     conda "bioconda::grep=3.4"
+    // NB: the bare 'ubuntu' image ships a `date` whose `+%s%3N` output makes Nextflow's
+    // nxf_date helper return "Unexpected: ...", which crashes .command.run under `set -u`
+    // for this sub-second task. Use an image whose `date` behaves (and which still has the
+    // GNU `cut --output-delimiter` this script needs).
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'docker://ubuntu' :
-        'docker.io/ubuntu' }"
+        'docker://mbdabrowska1/full-classification:1.0' :
+        'docker.io/mbdabrowska1/full-classification:1.0' }"
 
     input:
     tuple val(meta), path(logs)
