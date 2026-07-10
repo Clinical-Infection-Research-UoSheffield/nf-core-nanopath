@@ -496,19 +496,47 @@ def _close_light(recs, metric, amber, red):
     return "green"   # all kept hits are the same species
 
 
+def _pretty_species(key):
+    """Format a species key ('genus species') for display, e.g. 'Klebsiella pneumoniae'."""
+    parts = key.split()
+    if not parts:
+        return key
+    return parts[0].capitalize() + ((" " + " ".join(parts[1:])) if len(parts) > 1 else "")
+
+
 def assess_cluster(recs, winner_token, neg_keys):
     """Return the four per-cluster QC light levels + the called species."""
     blast, seq, krak = recs.get("blast", []), recs.get("seqmatch", []), recs.get("kraken2", [])
 
-    # 1. sequencer agreement: compare each classifier's top species
-    keys = [_species_key(r["species"]) for r in (_rank1(blast), _rank1(seq), _rank1(krak)) if r]
-    keys = [k for k in keys if k]
-    if len(keys) <= 1 or len(set(keys)) == 1:
-        agreement = "green"
-    elif len(set(keys)) == len(keys):
-        agreement = "red"           # no two agree
+    # 1. Consensus call + agreement, decided at species level. A genus-only top call
+    #    (e.g. kraken2 stopping at a genus) abstains rather than counting as a disagreement.
+    #    >=2 classifiers agreeing on a species -> report it; species calls all different ->
+    #    "Uncertain".
+    named = []
+    for token in ("blast", "seqmatch", "kraken2"):
+        r = _rank1(recs.get(token, []))
+        if r and not _is_unclassified(r["species"]):
+            key = _species_key(r["species"])
+            if len(key.split()) >= 2:               # a binomial: genus + species
+                named.append(key)
+    if named:
+        counts = {}
+        for key in named:
+            counts[key] = counts.get(key, 0) + 1
+        top_key = max(counts, key=counts.get)
+        top_n = counts[top_key]
+        unique_top = sum(1 for k in counts if counts[k] == top_n) == 1
+        if len(counts) == 1:                        # all species-callers agree
+            call_species, agreement = _pretty_species(top_key), "green"
+        elif unique_top and top_n >= 2:             # majority agree, one dissents
+            call_species, agreement = _pretty_species(top_key), "amber"
+        else:                                       # species calls all differ / no majority
+            call_species, agreement = "Uncertain", "red"
     else:
-        agreement = "amber"         # a dissenter
+        # no species-level call from any classifier: fall back to the winner's (genus) call
+        call_recs = recs.get(winner_token) or blast or seq or krak
+        c = _rank1(call_recs)
+        call_species, agreement = (c["species"] if c else "unclassified"), "green"
 
     # 2. close top hits: worst near-tie across the ranked classifiers
     close = _worst(
@@ -528,18 +556,8 @@ def assess_cluster(recs, winner_token, neg_keys):
             v = _qc_num(s1["s_ab_score"])
             score = "green" if v >= QC_SEQMATCH_SCORE_GREEN else "amber" if v >= QC_SEQMATCH_SCORE_AMBER else "red"
 
-    # the "call" = winning classifier's top species (fallback to any available)
-    call_recs = recs.get(winner_token) if winner_token else None
-    if not call_recs:
-        for t in ("blast", "seqmatch", "kraken2"):
-            if recs.get(t):
-                call_recs = recs[t]
-                break
-    call = _rank1(call_recs)
-    call_species = call["species"] if call else "unclassified"
-
     # 4. matches negative control (simple: called species seen in neg control)
-    ck = _species_key(call_species)
+    ck = "" if call_species == "Uncertain" else _species_key(call_species)
     negctrl = "red" if ck and ck in neg_keys else "green"
 
     return {"agreement": agreement, "close": close, "score": score,
@@ -641,10 +659,15 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
         def cell(level):
             return '<td class="c">{0}</td>'.format(_lamp(level, anchor if flagged else None))
 
+        if a["call_species"] == "Uncertain":
+            sp_html = "<b>Uncertain</b>"
+        else:
+            sp_html = '<span class="sci">{0}</span>'.format(_esc(a["call_species"]))
+
         body.append(
-            '<tr><td>{cid}</td><td><span class="sci">{sp}</span></td>'
+            '<tr><td>{cid}</td><td>{sp}</td>'
             '<td class="c">{reads}</td>{ag}{cl}{sc}{ng}</tr>'.format(
-                cid=_esc(cid), sp=_esc(a["call_species"]), reads=reads_txt,
+                cid=_esc(cid), sp=sp_html, reads=reads_txt,
                 ag=cell(lights["agreement"]), cl=cell(lights["close"]),
                 sc=cell(lights["score"]), ng=cell(lights["negctrl"])))
 
