@@ -382,6 +382,348 @@ def write_hit_details_csv(hit_details_dir, outpath, chosen_classifier='none', to
     return outpath
 
 
+# ----------------------------------------------------------------------------
+# Per-cluster QC traffic lights
+# ----------------------------------------------------------------------------
+# Tunable thresholds (see the report design notes)
+QC_BLAST_SCORE_GREEN = 99.0     # >= green, [amber, green) amber, < amber red
+QC_BLAST_SCORE_AMBER = 98.0
+QC_SEQMATCH_SCORE_GREEN = 0.95
+QC_SEQMATCH_SCORE_AMBER = 0.90
+QC_BLAST_CLOSE_AMBER = 1.0      # top1 - top2 (% identity): <= amber, <= red red
+QC_BLAST_CLOSE_RED = 0.3
+QC_SEQMATCH_CLOSE_AMBER = 0.02  # top1 - top2 (S_ab)
+QC_SEQMATCH_CLOSE_RED = 0.005
+POS_CONTROL_SPECIES = "Marinobacter nauticus"   # spiked into every sample
+
+_WIN_TOKEN = {"BLAST": "blast", "SeqMatch": "seqmatch", "Kraken2 (LCA)": "kraken2"}
+_LEVEL_RANK = {"green": 0, "amber": 1, "red": 2}
+
+
+def _qc_num(x):
+    try:
+        return float(str(x).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _species_key(name):
+    """Normalise a species name to 'genus species' for comparison."""
+    if _is_unclassified(name):
+        return ""
+    toks = re.sub(r"[^A-Za-z0-9 ]", " ", str(name)).lower().split()
+    return " ".join(toks[:2])
+
+
+def _worst(*levels):
+    return max(levels, key=lambda lvl: _LEVEL_RANK[lvl])
+
+
+def load_cluster_info(path):
+    """Load cluster -> {classifier label, reads, rel_abundance} from chosen_classifier.csv."""
+    info = {}
+    if not path or path in ("none", "unknown") or not os.path.isfile(path):
+        return info
+    try:
+        df = pd.read_csv(path, dtype=str).fillna("")
+    except Exception:
+        logger.exception("Failed to read chosen classifier map %s", path)
+        return info
+    for _, r in df.iterrows():
+        cid = str(r.get("cluster", "")).strip()
+        if not cid:
+            continue
+        info[cid] = {
+            "classifier": CLASSIFIER_LABELS.get(str(r.get("classifier", "")).strip().lower(), ""),
+            "reads": r.get("reads", ""),
+            "rel_abundance": r.get("rel_abundance", ""),
+        }
+    return info
+
+
+def collect_cluster_records(hit_details_dir, top_n=TOP_N_HITS):
+    """{cluster_id: {'blast': [recs], 'seqmatch': [recs], 'kraken2': [recs]}}."""
+    out = {}
+    if not hit_details_dir or hit_details_dir in ("none", "unknown") or not os.path.isdir(hit_details_dir):
+        return out
+    parsers = {"blastn": ("blast", blast_records),
+               "seqmatch": ("seqmatch", seqmatch_records),
+               "kraken2": ("kraken2", kraken2_records)}
+    for f in sorted(glob.glob(os.path.join(hit_details_dir, "*_consensus_classification.csv"))):
+        classifier = detect_classifier(f)
+        if classifier is None:
+            continue
+        token, parser = parsers[classifier]
+        try:
+            recs = parser(f) if classifier == "kraken2" else parser(f, top_n)
+        except Exception:
+            logger.exception("QC: failed to parse %s", f)
+            continue
+        out.setdefault(cluster_id_from_filename(f), {})[token] = recs
+    return out
+
+
+def _rank1(recs):
+    return recs[0] if recs else None
+
+
+def _close_light(recs, metric, amber, red):
+    if not recs or len(recs) < 2:
+        return "green"
+    a, b = _qc_num(recs[0].get(metric)), _qc_num(recs[1].get(metric))
+    if a is None or b is None:
+        return "green"
+    gap = a - b
+    if gap <= red:
+        return "red"
+    if gap <= amber:
+        return "amber"
+    return "green"
+
+
+def assess_cluster(recs, winner_token, neg_keys):
+    """Return the four per-cluster QC light levels + the called species."""
+    blast, seq, krak = recs.get("blast", []), recs.get("seqmatch", []), recs.get("kraken2", [])
+
+    # 1. sequencer agreement: compare each classifier's top species
+    keys = [_species_key(r["species"]) for r in (_rank1(blast), _rank1(seq), _rank1(krak)) if r]
+    keys = [k for k in keys if k]
+    if len(keys) <= 1 or len(set(keys)) == 1:
+        agreement = "green"
+    elif len(set(keys)) == len(keys):
+        agreement = "red"           # no two agree
+    else:
+        agreement = "amber"         # a dissenter
+
+    # 2. close top hits: worst near-tie across the ranked classifiers
+    close = _worst(
+        _close_light(blast, "pct_identity", QC_BLAST_CLOSE_AMBER, QC_BLAST_CLOSE_RED),
+        _close_light(seq, "s_ab_score", QC_SEQMATCH_CLOSE_AMBER, QC_SEQMATCH_CLOSE_RED),
+    )
+
+    # 3. low absolute score: prefer BLAST % identity, else SeqMatch S_ab
+    score = "amber"
+    b1 = _rank1(blast)
+    if b1 and not _is_unclassified(b1["species"]) and _qc_num(b1["pct_identity"]) is not None:
+        p = _qc_num(b1["pct_identity"])
+        score = "green" if p >= QC_BLAST_SCORE_GREEN else "amber" if p >= QC_BLAST_SCORE_AMBER else "red"
+    else:
+        s1 = _rank1(seq)
+        if s1 and not _is_unclassified(s1["species"]) and _qc_num(s1["s_ab_score"]) is not None:
+            v = _qc_num(s1["s_ab_score"])
+            score = "green" if v >= QC_SEQMATCH_SCORE_GREEN else "amber" if v >= QC_SEQMATCH_SCORE_AMBER else "red"
+
+    # the "call" = winning classifier's top species (fallback to any available)
+    call_recs = recs.get(winner_token) if winner_token else None
+    if not call_recs:
+        for t in ("blast", "seqmatch", "kraken2"):
+            if recs.get(t):
+                call_recs = recs[t]
+                break
+    call = _rank1(call_recs)
+    call_species = call["species"] if call else "unclassified"
+
+    # 4. matches negative control (simple: called species seen in neg control)
+    ck = _species_key(call_species)
+    negctrl = "red" if ck and ck in neg_keys else "green"
+
+    return {"agreement": agreement, "close": close, "score": score,
+            "negctrl": negctrl, "call_species": call_species}
+
+
+def marinobacter_present(clusters, name=POS_CONTROL_SPECIES):
+    """True if the positive-control spike appears in any cluster / classifier."""
+    key = _species_key(name)
+    for recs in clusters.values():
+        for token in ("blast", "seqmatch", "kraken2"):
+            for r in recs.get(token, []):
+                if _species_key(r["species"]) == key:
+                    return True
+    return False
+
+
+QC_CSS = """
+<style>
+.qc{--g:#16a34a;--a:#d97706;--r:#dc2626;font-size:14px}
+.qc .lamp{display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle}
+.qc .g .lamp{background:var(--g)} .qc .a .lamp{background:var(--a)} .qc .r .lamp{background:var(--r)}
+.qc a.lamp-link{text-decoration:none} .qc a.lamp-link:hover .lamp{transform:scale(1.3)}
+.qc .banner{display:flex;flex-wrap:wrap;gap:12px;margin:6px 0}
+.qc .card{flex:1 1 220px;border:1px solid #d7dde3;border-radius:10px;padding:11px 14px;display:flex;gap:12px;align-items:center}
+.qc .card .lamp{width:15px;height:15px;flex:none}
+.qc .card b{font-size:13px} .qc .card small{display:block;color:#5c6773;font-size:12px}
+.qc .legend{font-size:12px;color:#5c6773;margin:6px 0 10px}
+.qc .legend i{width:9px;height:9px;border-radius:50%;display:inline-block;vertical-align:middle;margin:0 4px 0 12px}
+.qc table{border-collapse:collapse;width:100%;font-size:13.5px}
+.qc thead th{text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6773;padding:8px 10px;border-bottom:1px solid #d7dde3}
+.qc thead th.c{text-align:center}
+.qc tbody td{padding:9px 10px;border-bottom:1px solid #e6eaee}
+.qc tbody td.c{text-align:center}
+.qc .sci{font-style:italic}
+.qc .cid{font-weight:700;color:#0f766e}
+.qc .reads{color:#5c6773;font-variant-numeric:tabular-nums}
+.qc .qc-detail{display:none;background:#f6f8fa}
+.qc .qc-detail:target{display:table-row}
+.qc .qc-detail td{padding:12px 16px}
+.qc .reason{margin:0 0 8px} .qc .reason .lamp{margin-right:8px}
+.qc .mini{border-collapse:collapse;margin-top:6px;font-size:13px}
+.qc .mini th,.qc .mini td{border-bottom:1px solid #e6eaee;padding:5px 10px;text-align:left}
+.qc .mini td.n{text-align:right;font-variant-numeric:tabular-nums}
+.qc .pill{font-size:11px;font-weight:600;color:#16a34a;margin-left:6px}
+</style>
+"""
+
+
+def _lamp(level, href=None):
+    cls = {"green": "g", "amber": "a", "red": "r"}[level]
+    dot = '<span class="{0}"><span class="lamp"></span></span>'.format(cls)
+    if href and level != "green":
+        return '<a class="lamp-link {0}" href="#{1}"><span class="lamp"></span></a>'.format(cls, href)
+    return dot
+
+
+def _esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _cluster_sort_key(cid):
+    return (0, int(cid)) if str(cid).isdigit() else (1, str(cid))
+
+
+def build_qc_html(clusters, cluster_info, neg_species):
+    """Build the QC traffic-light section HTML from parsed cluster records."""
+    neg_keys = {_species_key(s) for s in (neg_species or []) if _species_key(s)}
+
+    rows_html, detail_html = [], []
+    flagged_total = 0
+    for cid in sorted(clusters, key=_cluster_sort_key):
+        recs = clusters[cid]
+        info = cluster_info.get(str(cid), {})
+        winner_label = info.get("classifier", "")
+        winner_token = _WIN_TOKEN.get(winner_label)
+        a = assess_cluster(recs, winner_token, neg_keys)
+        lights = {k: a[k] for k in ("agreement", "close", "score", "negctrl")}
+        flagged = any(v != "green" for v in lights.values())
+        anchor = "qc-{0}".format(cid)
+        reads = info.get("rel_abundance", "")
+        reads_txt = "{0}%".format(reads) if str(reads).strip() not in ("", "nan") else "-"
+
+        def cell(level):
+            return '<td class="c">{0}</td>'.format(_lamp(level, anchor if flagged else None))
+
+        rows_html.append(
+            '<tr><td><span class="cid">{cid}</span></td>'
+            '<td><span class="sci">{sp}</span></td>'
+            '<td class="c reads">{reads}</td>{ag}{cl}{sc}{ng}</tr>'.format(
+                cid=_esc(cid), sp=_esc(a["call_species"]), reads=reads_txt,
+                ag=cell(lights["agreement"]), cl=cell(lights["close"]),
+                sc=cell(lights["score"]), ng=cell(lights["negctrl"])))
+
+        if flagged:
+            flagged_total += 1
+            detail_html.append(_build_detail(cid, anchor, recs, a, lights))
+
+    if not rows_html:
+        return ""
+
+    n = len(rows_html)
+    overall = "green" if flagged_total == 0 else "amber" if flagged_total < n else "red"
+    overall_txt = ("all clusters confident" if flagged_total == 0
+                   else "{0} of {1} cluster(s) flagged".format(flagged_total, n))
+    pos = marinobacter_present(clusters)
+    pos_level = "green" if pos else "red"
+    pos_txt = ("<i>{0}</i> present".format(_esc(POS_CONTROL_SPECIES)) if pos
+               else "<i>{0}</i> NOT detected".format(_esc(POS_CONTROL_SPECIES)))
+
+    banner = (
+        '<div class="banner">'
+        '<div class="card {ol}"><span class="lamp"></span><div><b>Overall</b>'
+        '<small>{ot}</small></div></div>'
+        '<div class="card {pl}"><span class="lamp"></span><div><b>Positive-control spike</b>'
+        '<small>{pt}</small></div></div></div>'.format(ol=_map3(overall), ot=overall_txt,
+                                                       pl=_map3(pos_level), pt=pos_txt))
+
+    legend = ('<p class="legend">Per-cluster checks &mdash; '
+              '<i style="background:#16a34a"></i>confident '
+              '<i style="background:#d97706"></i>interpret with care '
+              '<i style="background:#dc2626"></i>unreliable / QC concern. '
+              'Click an amber/red light for detail.</p>')
+
+    table = (
+        '<table><thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads</th>'
+        '<th class="c">Agreement</th><th class="c">Close hits</th>'
+        '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
+        '<tbody>{0}</tbody></table>'.format("".join(rows_html))
+        + "".join(detail_html))
+
+    return QC_CSS + '<div class="qc">' + banner + legend + table + '</div>'
+
+
+def _map3(level):
+    return {"green": "g", "amber": "a", "red": "r"}[level]
+
+
+def _build_detail(cid, anchor, recs, a, lights):
+    reasons = []
+    if lights["agreement"] != "green":
+        calls = []
+        for token, label in (("blast", "BLAST"), ("kraken2", "kraken2"), ("seqmatch", "SeqMatch")):
+            r = _rank1(recs.get(token, []))
+            if r and not _is_unclassified(r["species"]):
+                calls.append("{0}: <i>{1}</i>".format(label, _esc(r["species"])))
+        reasons.append((lights["agreement"],
+                        "<b>Classifiers disagree.</b> " + "; ".join(calls)))
+    if lights["score"] != "green":
+        b1 = _rank1(recs.get("blast", []))
+        detail = ""
+        if b1 and _qc_num(b1["pct_identity"]) is not None:
+            detail = " Best BLAST hit {0}% identity.".format(_esc(b1["pct_identity"]))
+        reasons.append((lights["score"], "<b>Low absolute score.</b>" + detail))
+    if lights["close"] != "green":
+        reasons.append((lights["close"],
+                        "<b>Close top hits.</b> Runner-up is within the near-tie margin."))
+    if lights["negctrl"] != "green":
+        reasons.append((lights["negctrl"],
+                        "<b>Also in the negative control.</b> <i>{0}</i> appears in the neg-control "
+                        "results &mdash; possible contamination.".format(_esc(a["call_species"]))))
+
+    reason_html = "".join(
+        '<p class="reason {0}"><span class="lamp"></span>{1}</p>'.format(_map3(lvl), txt)
+        for lvl, txt in reasons)
+
+    # a small per-classifier breakdown table
+    mini_rows = []
+    for token, label in (("blast", "BLAST"), ("seqmatch", "SeqMatch"), ("kraken2", "kraken2")):
+        for i, r in enumerate(recs.get(token, [])):
+            metric = (r.get("pct_identity") or r.get("s_ab_score") or r.get("lca_reads_pct") or "")
+            unit = ("%" if r.get("pct_identity") else "")
+            mini_rows.append(
+                '<tr><td>{lab}</td><td><span class="sci">{sp}</span></td>'
+                '<td class="n">{m}{u}</td></tr>'.format(
+                    lab=label if i == 0 else "", sp=_esc(r["species"]),
+                    m=_esc(metric) if str(metric).strip() else "-", u=unit))
+    mini = ('<table class="mini"><thead><tr><th>Classifier</th><th>Hit</th>'
+            '<th class="n">Score</th></tr></thead><tbody>{0}</tbody></table>'.format("".join(mini_rows)))
+
+    return ('<tr class="qc-detail" id="{a}"><td colspan="7">'
+            '<b>Cluster {c}</b>{reasons}{mini}</td></tr>'.format(
+                a=anchor, c=_esc(cid), reasons=reason_html, mini=mini))
+
+
+def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species=None, top_n=TOP_N_HITS):
+    """Add the per-cluster QC traffic-light section to the report."""
+    clusters = collect_cluster_records(hit_details_dir, top_n)
+    if not clusters:
+        return
+    cluster_info = load_cluster_info(chosen_classifier)
+    html = build_qc_html(clusters, cluster_info, neg_species)
+    if not html:
+        return
+    section = reprt.add_section()
+    section.markdown("<br/>\n### Sequence identification & QC\n")
+    section.markdown(html)
+
+
 def parse_args():
     """Run the entry point."""
     parser = argparse.ArgumentParser()
@@ -545,8 +887,10 @@ def main(args):
             <font color="red">**{0} rRNA NOT detected**</font>
             '''.format(assay_info))
 
-        # Per-cluster top hits for the selected classifier, so close calls between species are visible
-        add_hit_details_section(reprt, args.hit_details, args.chosen_classifier)
+        # Per-cluster QC traffic lights (agreement, close hits, absolute score, neg-control
+        # match) plus the Marinobacter nauticus positive-control spike check
+        neg_species = list(negative['Detected Species']) if negative is not None else []
+        add_qc_section(reprt, args.hit_details, args.chosen_classifier, neg_species)
 
         # Full machine-readable record: top hits for every classifier, all clusters
         write_hit_details_csv(

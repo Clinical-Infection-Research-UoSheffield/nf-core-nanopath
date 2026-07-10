@@ -139,12 +139,21 @@ def write_chosen_classifier(infile, prefix):
     raw = pd.read_csv(infile, index_col=False, sep=';')
     rows = []
     # id column + >13 classifier columns == full mode (matches choose_classification)
-    if raw.shape[1] > 14:
+    full = raw.shape[1] > 14
+    if raw.shape[1] >= 2:
         ids = raw.iloc[:, 0]
+        reads_col = pd.to_numeric(raw.iloc[:, 1], errors="coerce").fillna(0)
+        total = reads_col.sum() or 1
         data1 = raw.iloc[:, 1:]
         for i, (_, row) in enumerate(data1.iterrows()):
-            rows.append({"cluster": ids.iloc[i], "classifier": choose_row_classifier(row)})
-    pd.DataFrame(rows, columns=["cluster", "classifier"]).to_csv(
+            reads = int(reads_col.iloc[i])
+            rows.append({
+                "cluster": ids.iloc[i],
+                "classifier": choose_row_classifier(row) if full else "",
+                "reads": reads,
+                "rel_abundance": round(reads / total * 100, 1),
+            })
+    pd.DataFrame(rows, columns=["cluster", "classifier", "reads", "rel_abundance"]).to_csv(
         prefix + "_chosen_classifier.csv", index=False)
 
 
