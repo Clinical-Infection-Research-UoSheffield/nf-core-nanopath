@@ -395,6 +395,7 @@ QC_BLAST_CLOSE_RED = 0.3
 QC_SEQMATCH_CLOSE_AMBER = 0.02  # top1 - top2 (S_ab)
 QC_SEQMATCH_CLOSE_RED = 0.005
 POS_CONTROL_SPECIES = "Marinobacter nauticus"   # spiked into every sample
+SHOW_TOP_N_CLUSTERS = 3   # matches the previous report's top-3 abundance display; None = show all
 
 _WIN_TOKEN = {"BLAST": "blast", "SeqMatch": "seqmatch", "Kraken2 (LCA)": "kraken2"}
 _LEVEL_RANK = {"green": 0, "amber": 1, "red": 2}
@@ -468,17 +469,31 @@ def _rank1(recs):
 
 
 def _close_light(recs, metric, amber, red):
-    if not recs or len(recs) < 2:
+    """Near-tie only counts when the runner-up is a DIFFERENT species.
+
+    Strain-level ties (e.g. several 'Klebsiella pneumoniae, NBRC ...' rows) collapse to the
+    same species key, so they are not flagged. We compare the top hit against the first
+    runner-up that is a genuinely different species.
+    """
+    if not recs:
         return "green"
-    a, b = _qc_num(recs[0].get(metric)), _qc_num(recs[1].get(metric))
-    if a is None or b is None:
+    top_key = _species_key(recs[0].get("species"))
+    top_val = _qc_num(recs[0].get(metric))
+    if not top_key or top_val is None:
         return "green"
-    gap = a - b
-    if gap <= red:
-        return "red"
-    if gap <= amber:
-        return "amber"
-    return "green"
+    for r in recs[1:]:
+        k = _species_key(r.get("species"))
+        if k and k != top_key:
+            v = _qc_num(r.get(metric))
+            if v is None:
+                return "green"
+            gap = top_val - v
+            if gap <= red:
+                return "red"
+            if gap <= amber:
+                return "amber"
+            return "green"
+    return "green"   # all kept hits are the same species
 
 
 def assess_cluster(recs, winner_token, neg_keys):
@@ -590,13 +605,27 @@ def _cluster_sort_key(cid):
     return (0, int(cid)) if str(cid).isdigit() else (1, str(cid))
 
 
-def build_qc_html(clusters, cluster_info, neg_species):
+def _cluster_reads(cid, cluster_info):
+    try:
+        return float(cluster_info.get(str(cid), {}).get("reads") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_CLUSTERS):
     """Build the QC traffic-light section HTML from parsed cluster records."""
     neg_keys = {_species_key(s) for s in (neg_species or []) if _species_key(s)}
 
+    # the positive-control spike is checked across ALL clusters, regardless of size
+    pos = marinobacter_present(clusters)
+
+    # show the most abundant clusters first, limited to the previous top-N display
+    ordered = sorted(clusters, key=lambda c: -_cluster_reads(c, cluster_info))
+    shown = ordered[:top_clusters] if top_clusters else ordered
+
     rows_html, detail_html = [], []
     flagged_total = 0
-    for cid in sorted(clusters, key=_cluster_sort_key):
+    for cid in shown:
         recs = clusters[cid]
         info = cluster_info.get(str(cid), {})
         winner_label = info.get("classifier", "")
@@ -605,8 +634,9 @@ def build_qc_html(clusters, cluster_info, neg_species):
         lights = {k: a[k] for k in ("agreement", "close", "score", "negctrl")}
         flagged = any(v != "green" for v in lights.values())
         anchor = "qc-{0}".format(cid)
-        reads = info.get("rel_abundance", "")
-        reads_txt = "{0}%".format(reads) if str(reads).strip() not in ("", "nan") else "-"
+        reads, pct = info.get("reads", ""), info.get("rel_abundance", "")
+        reads_txt = ("{0} ({1}%)".format(reads, pct)
+                     if str(reads).strip() not in ("", "nan") else "-")
 
         def cell(level):
             return '<td class="c">{0}</td>'.format(_lamp(level, anchor if flagged else None))
@@ -630,7 +660,6 @@ def build_qc_html(clusters, cluster_info, neg_species):
     overall = "green" if flagged_total == 0 else "amber" if flagged_total < n else "red"
     overall_txt = ("all clusters confident" if flagged_total == 0
                    else "{0} of {1} cluster(s) flagged".format(flagged_total, n))
-    pos = marinobacter_present(clusters)
     pos_level = "green" if pos else "red"
     pos_txt = ("<i>{0}</i> present".format(_esc(POS_CONTROL_SPECIES)) if pos
                else "<i>{0}</i> NOT detected".format(_esc(POS_CONTROL_SPECIES)))
@@ -880,9 +909,10 @@ def main(args):
             infection_type='fungal'
             assay_info='Fungal ITS2'
 
-        if results_table is not None:
-            section.table(results_table, classes=['highlighted', 'larger-first-column'])
-        else:
+        # The per-cluster QC table below is now the results table, so we no longer show the
+        # separate top-3 abundance table (they duplicated each other). Only the "not detected"
+        # message remains for the empty case.
+        if results_table is None:
             section.markdown('''
             <font color="red">**{0} rRNA NOT detected**</font>
             '''.format(assay_info))
