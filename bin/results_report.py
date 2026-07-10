@@ -559,42 +559,30 @@ def marinobacter_present(clusters, name=POS_CONTROL_SPECIES):
 
 QC_CSS = """
 <style>
-.qc{--g:#16a34a;--a:#d97706;--r:#dc2626;font-size:14px}
-.qc .lamp{display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle}
+.qc{--g:#16a34a;--a:#d97706;--r:#dc2626}
+.qc .lamp{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle}
 .qc .g .lamp{background:var(--g)} .qc .a .lamp{background:var(--a)} .qc .r .lamp{background:var(--r)}
 .qc a.lamp-link{text-decoration:none} .qc a.lamp-link:hover .lamp{transform:scale(1.3)}
-.qc .banner{display:flex;flex-wrap:wrap;gap:12px;margin:6px 0}
-.qc .card{flex:1 1 220px;border:1px solid #d7dde3;border-radius:10px;padding:11px 14px;display:flex;gap:12px;align-items:center}
-.qc .card .lamp{width:15px;height:15px;flex:none}
-.qc .card b{font-size:13px} .qc .card small{display:block;color:#5c6773;font-size:12px}
-.qc .legend{font-size:12px;color:#5c6773;margin:6px 0 10px}
-.qc .legend i{width:9px;height:9px;border-radius:50%;display:inline-block;vertical-align:middle;margin:0 4px 0 12px}
-.qc table{border-collapse:collapse;width:100%;font-size:13.5px}
-.qc thead th{text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6773;padding:8px 10px;border-bottom:1px solid #d7dde3}
-.qc thead th.c{text-align:center}
-.qc tbody td{padding:9px 10px;border-bottom:1px solid #e6eaee}
-.qc tbody td.c{text-align:center}
+.qc .qc-summary{margin:4px 0 8px;font-size:15px}
+.qc .qc-summary span{display:inline-block;margin-right:24px}
+.qc .qc-summary .lamp{margin-right:7px}
+.qc .qc-legend{font-size:12px;color:#5c6773;margin:0 0 12px}
+.qc .qc-legend i{width:9px;height:9px;border-radius:50%;display:inline-block;vertical-align:middle;margin:0 4px 0 14px}
+.qc td.c,.qc th.c{text-align:center}
 .qc .sci{font-style:italic}
-.qc .cid{font-weight:700;color:#0f766e}
-.qc .reads{color:#5c6773;font-variant-numeric:tabular-nums}
-.qc .qc-detail{display:none;background:#f6f8fa}
+.qc .qc-detail{display:none}
 .qc .qc-detail:target{display:table-row}
-.qc .qc-detail td{padding:12px 16px}
-.qc .reason{margin:0 0 8px} .qc .reason .lamp{margin-right:8px}
-.qc .mini{border-collapse:collapse;margin-top:6px;font-size:13px}
-.qc .mini th,.qc .mini td{border-bottom:1px solid #e6eaee;padding:5px 10px;text-align:left}
-.qc .mini td.n{text-align:right;font-variant-numeric:tabular-nums}
-.qc .pill{font-size:11px;font-weight:600;color:#16a34a;margin-left:6px}
+.qc .qc-detail>td{background:#f6f8fa}
+.qc .reason{margin:2px 0 8px} .qc .reason .lamp{margin-right:8px}
 </style>
 """
 
 
 def _lamp(level, href=None):
     cls = {"green": "g", "amber": "a", "red": "r"}[level]
-    dot = '<span class="{0}"><span class="lamp"></span></span>'.format(cls)
     if href and level != "green":
         return '<a class="lamp-link {0}" href="#{1}"><span class="lamp"></span></a>'.format(cls, href)
-    return dot
+    return '<span class="{0}"><span class="lamp"></span></span>'.format(cls)
 
 
 def _esc(s):
@@ -623,13 +611,12 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
     ordered = sorted(clusters, key=lambda c: -_cluster_reads(c, cluster_info))
     shown = ordered[:top_clusters] if top_clusters else ordered
 
-    rows_html, detail_html = [], []
+    body = []
     flagged_total = 0
     for cid in shown:
         recs = clusters[cid]
         info = cluster_info.get(str(cid), {})
-        winner_label = info.get("classifier", "")
-        winner_token = _WIN_TOKEN.get(winner_label)
+        winner_token = _WIN_TOKEN.get(info.get("classifier", ""))
         a = assess_cluster(recs, winner_token, neg_keys)
         lights = {k: a[k] for k in ("agreement", "close", "score", "negctrl")}
         flagged = any(v != "green" for v in lights.values())
@@ -641,51 +628,48 @@ def build_qc_html(clusters, cluster_info, neg_species, top_clusters=SHOW_TOP_N_C
         def cell(level):
             return '<td class="c">{0}</td>'.format(_lamp(level, anchor if flagged else None))
 
-        rows_html.append(
-            '<tr><td><span class="cid">{cid}</span></td>'
-            '<td><span class="sci">{sp}</span></td>'
-            '<td class="c reads">{reads}</td>{ag}{cl}{sc}{ng}</tr>'.format(
+        body.append(
+            '<tr><td>{cid}</td><td><span class="sci">{sp}</span></td>'
+            '<td class="c">{reads}</td>{ag}{cl}{sc}{ng}</tr>'.format(
                 cid=_esc(cid), sp=_esc(a["call_species"]), reads=reads_txt,
                 ag=cell(lights["agreement"]), cl=cell(lights["close"]),
                 sc=cell(lights["score"]), ng=cell(lights["negctrl"])))
 
         if flagged:
             flagged_total += 1
-            detail_html.append(_build_detail(cid, anchor, recs, a, lights))
+            body.append(_build_detail(cid, anchor, recs, a, lights))   # dropdown right below its row
 
-    if not rows_html:
+    if not body:
         return ""
 
-    n = len(rows_html)
+    n = len(shown)
     overall = "green" if flagged_total == 0 else "amber" if flagged_total < n else "red"
     overall_txt = ("all clusters confident" if flagged_total == 0
-                   else "{0} of {1} cluster(s) flagged".format(flagged_total, n))
+                   else "{0} of {1} clusters flagged".format(flagged_total, n))
     pos_level = "green" if pos else "red"
     pos_txt = ("<i>{0}</i> present".format(_esc(POS_CONTROL_SPECIES)) if pos
                else "<i>{0}</i> NOT detected".format(_esc(POS_CONTROL_SPECIES)))
 
-    banner = (
-        '<div class="banner">'
-        '<div class="card {ol}"><span class="lamp"></span><div><b>Overall</b>'
-        '<small>{ot}</small></div></div>'
-        '<div class="card {pl}"><span class="lamp"></span><div><b>Positive-control spike</b>'
-        '<small>{pt}</small></div></div></div>'.format(ol=_map3(overall), ot=overall_txt,
-                                                       pl=_map3(pos_level), pt=pos_txt))
+    summary = (
+        '<div class="qc-summary">'
+        '<span class="{ol}"><span class="lamp"></span><b>Overall:</b> {ot}</span>'
+        '<span class="{pl}"><span class="lamp"></span><b>Positive control:</b> {pt}</span>'
+        '</div>'.format(ol=_map3(overall), ot=overall_txt, pl=_map3(pos_level), pt=pos_txt))
 
-    legend = ('<p class="legend">Per-cluster checks &mdash; '
+    legend = ('<p class="qc-legend">Per-cluster checks &mdash; '
               '<i style="background:#16a34a"></i>confident '
               '<i style="background:#d97706"></i>interpret with care '
               '<i style="background:#dc2626"></i>unreliable / QC concern. '
               'Click an amber/red light for detail.</p>')
 
     table = (
-        '<table><thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads</th>'
+        '<table border="1" class="dataframe">'
+        '<thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads (%)</th>'
         '<th class="c">Agreement</th><th class="c">Close hits</th>'
         '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
-        '<tbody>{0}</tbody></table>'.format("".join(rows_html))
-        + "".join(detail_html))
+        '<tbody>{0}</tbody></table>'.format("".join(body)))
 
-    return QC_CSS + '<div class="qc">' + banner + legend + table + '</div>'
+    return QC_CSS + '<div class="qc">' + summary + legend + table + '</div>'
 
 
 def _map3(level):
@@ -720,19 +704,25 @@ def _build_detail(cid, anchor, recs, a, lights):
         '<p class="reason {0}"><span class="lamp"></span>{1}</p>'.format(_map3(lvl), txt)
         for lvl, txt in reasons)
 
-    # a small per-classifier breakdown table
+    # a small per-classifier breakdown table (unclassified hits are omitted; kraken2 has no
+    # comparable score so it shows "-")
     mini_rows = []
     for token, label in (("blast", "BLAST"), ("seqmatch", "SeqMatch"), ("kraken2", "kraken2")):
-        for i, r in enumerate(recs.get(token, [])):
-            metric = (r.get("pct_identity") or r.get("s_ab_score") or r.get("lca_reads_pct") or "")
-            unit = ("%" if r.get("pct_identity") else "")
+        real = [r for r in recs.get(token, []) if not _is_unclassified(r["species"])]
+        for i, r in enumerate(real):
+            if str(r.get("pct_identity", "")).strip():
+                score = _esc(r["pct_identity"]) + "%"
+            elif str(r.get("s_ab_score", "")).strip():
+                score = _esc(r["s_ab_score"])
+            else:
+                score = "-"
             mini_rows.append(
                 '<tr><td>{lab}</td><td><span class="sci">{sp}</span></td>'
-                '<td class="n">{m}{u}</td></tr>'.format(
-                    lab=label if i == 0 else "", sp=_esc(r["species"]),
-                    m=_esc(metric) if str(metric).strip() else "-", u=unit))
-    mini = ('<table class="mini"><thead><tr><th>Classifier</th><th>Hit</th>'
-            '<th class="n">Score</th></tr></thead><tbody>{0}</tbody></table>'.format("".join(mini_rows)))
+                '<td class="c">{sc}</td></tr>'.format(
+                    lab=label if i == 0 else "", sp=_esc(r["species"]), sc=score))
+    mini = ('<table border="1" class="dataframe"><thead><tr><th>Classifier</th><th>Hit</th>'
+            '<th class="c">Score</th></tr></thead><tbody>{0}</tbody></table>'.format("".join(mini_rows))
+            if mini_rows else "")
 
     return ('<tr class="qc-detail" id="{a}"><td colspan="7">'
             '<b>Cluster {c}</b>{reasons}{mini}</td></tr>'.format(
