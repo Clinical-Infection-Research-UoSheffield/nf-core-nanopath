@@ -21,6 +21,8 @@
 set -euo pipefail
 
 DEST=/mnt/parscratch/users/md1jgzz/fresh_databases
+OUT="${DEST}/full"          # keep these dense "full-genome-derived" dbs separate from the others
+mkdir -p "$OUT"
 DATE=$(date +%Y%m%d)
 
 # assembly quality to include: "Complete Genome" alone is leaner; add "Chromosome" for more depth
@@ -29,7 +31,7 @@ MIN_LEN=1200            # drop partial 16S fragments (full-length ~1500 bp)
 DOWNLOAD_JOBS=12        # parallel wget streams -- keep modest to stay polite to NCBI
 THREADS=${SLURM_CPUS_PER_TASK:-16}
 
-WORK="${DEST}/genome16s_build_${DATE}"
+WORK="${OUT}/genome16s_build_${DATE}"
 PARTS="${WORK}/parts"
 mkdir -p "$PARTS"
 cd "$WORK"
@@ -102,7 +104,7 @@ awk -F'\t' '{
 
 # ---- 5a) BLAST db ----
 echo "[4/5] building BLAST db"
-BLAST_OUT="${DEST}/genome_16S_blast_${DATE}"
+BLAST_OUT="${OUT}/genome_16S_blast_${DATE}"
 mkdir -p "$BLAST_OUT"
 makeblastdb -in blast.fasta -dbtype nucl -parse_seqids \
   -taxid_map taxid_map.txt -title "genome_16S_${DATE}" \
@@ -110,7 +112,7 @@ makeblastdb -in blast.fasta -dbtype nucl -parse_seqids \
 
 # ---- 5b) kraken2 db (NCBI taxonomy; taxids already in the headers -> --skip-maps) ----
 echo "[5/5] building kraken2 db"
-KDB="${DEST}/kraken2_genome16S_${DATE}"
+KDB="${OUT}/kraken2_genome16S_${DATE}"
 mkdir -p "$KDB"
 kraken2-build --db "$KDB" --download-taxonomy --skip-maps --use-ftp --threads "$THREADS"
 kraken2-build --db "$KDB" --add-to-library "${WORK}/kraken.fasta"
