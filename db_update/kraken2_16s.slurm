@@ -15,10 +15,13 @@ DATE=$(date +%Y%m%d)
 DB="${DEST}/kraken2_16S_${DATE}"
 THREADS=${SLURM_CPUS_PER_TASK:-8}
 
-# tools: kraken2 (+ blast for blastdbcmd/dustmasker)
-eval "$(conda shell.bash hook)"
-[ -d "${DEST}/.dbtools" ] || conda create -y -p "${DEST}/.dbtools" -c conda-forge -c bioconda kraken2 blast wget rsync
-source activate "${DEST}/.dbtools"
+# tools: use the conda env's binaries directly -- no `conda` command needed in the batch job
+# (SLURM jobs don't source your ~/.bashrc, so `conda`/`activate` aren't defined here).
+# Create the env ONCE interactively if it doesn't exist yet:
+#   conda create -y -p ${DEST}/.dbtools -c conda-forge -c bioconda kraken2 blast rsync
+DBTOOLS="${DEST}/.dbtools"
+[ -x "${DBTOOLS}/bin/kraken2-build" ] || { echo "ERROR: conda env missing at ${DBTOOLS}; create it interactively first (see comment above)"; exit 1; }
+export PATH="${DBTOOLS}/bin:${PATH}"
 
 WORK="${DB}/build"; mkdir -p "$WORK"; cd "$WORK"
 
