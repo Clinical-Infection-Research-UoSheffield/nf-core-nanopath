@@ -17,7 +17,7 @@ THREADS=${SLURM_CPUS_PER_TASK:-8}
 
 # tools: kraken2 (+ blast for blastdbcmd/dustmasker)
 eval "$(conda shell.bash hook)"
-[ -d "${DEST}/.dbtools" ] || conda create -y -p "${DEST}/.dbtools" -c conda-forge -c bioconda kraken2 blast wget
+[ -d "${DEST}/.dbtools" ] || conda create -y -p "${DEST}/.dbtools" -c conda-forge -c bioconda kraken2 blast wget rsync
 source activate "${DEST}/.dbtools"
 
 WORK="${DB}/build"; mkdir -p "$WORK"; cd "$WORK"
@@ -32,7 +32,7 @@ blastdbcmd -db 16S_ribosomal_RNA -entry all -outfmt '%a %T %s' \
 
 # 3) build with NCBI taxonomy; --skip-maps because taxids are already in the headers
 cd "$DB"
-kraken2-build --db "$DB" --download-taxonomy --skip-maps --threads "$THREADS"
+kraken2-build --db "$DB" --download-taxonomy --skip-maps --use-ftp --threads "$THREADS"
 kraken2-build --db "$DB" --add-to-library "${WORK}/16S.fasta"
 kraken2-build --db "$DB" --build --threads "$THREADS"
 kraken2-build --db "$DB" --clean
