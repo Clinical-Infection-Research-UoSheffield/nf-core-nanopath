@@ -18,7 +18,7 @@ THREADS=${SLURM_CPUS_PER_TASK:-8}
 # tools: kraken2 (+ blast for blastdbcmd/dustmasker)
 eval "$(conda shell.bash hook)"
 [ -d "${DEST}/.dbtools" ] || conda create -y -p "${DEST}/.dbtools" -c conda-forge -c bioconda kraken2 blast wget
-conda activate "${DEST}/.dbtools"
+source activate "${DEST}/.dbtools"
 
 WORK="${DB}/build"; mkdir -p "$WORK"; cd "$WORK"
 
