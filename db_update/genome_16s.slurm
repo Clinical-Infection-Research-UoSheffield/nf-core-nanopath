@@ -45,11 +45,15 @@ export PATH="${DBTOOLS}/bin:${PATH}"
 echo "[1/5] fetching assembly summary"
 wget -q -O assembly_summary.txt https://ftp.ncbi.nlm.nih.gov/genomes/refseq/bacteria/assembly_summary.txt
 
-# cols: 6=taxid, 11=version_status, 12=assembly_level, 20=ftp_path. Filter on assembly_level
-# (a QUALITY filter that keeps ALL strains) -- NOT refseq_category, which is 1-per-species.
+# cols: 6=taxid, 11=version_status, 12=assembly_level, 20=ftp_path, 21=excluded_from_refseq.
+# Filter on assembly_level (a QUALITY filter that keeps ALL strains) -- NOT refseq_category,
+# which is 1-per-species. $21=="" drops assemblies RefSeq has flagged (contaminated, chimeric,
+# derived-from-metagenome, too many frameshifts, anomalous length, etc.).
 awk -F'\t' -v levels="$LEVELS" '
   /^#/ { next }
-  $11=="latest" && $20!="na" && ($12 ~ "^(" levels ")$") { print $6, $20 }
+  $11=="latest" && $20!="na" && $21=="" && ($12 ~ "^(" levels ")$") {
+    ftp=$20; sub(/^ftp:\/\//, "https://", ftp); print $6, ftp   # force https (some rows are ftp://)
+  }
 ' assembly_summary.txt > targets.txt
 echo "      $(wc -l < targets.txt) assemblies to scan"
 
@@ -59,29 +63,37 @@ echo "      $(wc -l < targets.txt) assemblies to scan"
 echo "[2/5] downloading + extracting 16S (${DOWNLOAD_JOBS} parallel)"
 export PARTS MIN_LEN
 
-fetch_one() {
-  local taxid="$1" ftp="$2" base url tmp
-  base=$(basename "$ftp")
-  url="${ftp}/${base}_rna_from_genomic.fna.gz"
-  tmp=$(mktemp)
-  if wget -q --tries=2 -O "${tmp}.gz" "$url" 2>/dev/null && [ -s "${tmp}.gz" ]; then
-    gzip -dc "${tmp}.gz" 2>/dev/null | awk -v taxid="$taxid" -v minlen="$MIN_LEN" '
-      /^>/ {
-        if (keep && length(seq) >= minlen) print taxid "\t" seq
-        seq=""; keep = ($0 ~ /\[product=16S ribosomal RNA\]/); next
-      }
-      { seq = seq $0 }
-      END { if (keep && length(seq) >= minlen) print taxid "\t" seq }
-    ' >> "${PARTS}/part.${BASHPID}.tsv"
-  fi
-  rm -f "$tmp" "${tmp}.gz"
-  return 0
-}
-export -f fetch_one
+# per-assembly worker as a standalone script -- more robust than `export -f` + `bash -c`,
+# which doesn't reliably propagate the function in a batch shell. Reads PARTS/MIN_LEN from env.
+cat > fetch_one.sh <<'EOS'
+#!/bin/bash
+taxid="$1"; ftp="$2"
+base=$(basename "$ftp")
+tmp=$(mktemp)
+if wget -q --tries=2 -O "${tmp}.gz" "${ftp}/${base}_rna_from_genomic.fna.gz" 2>/dev/null && [ -s "${tmp}.gz" ]; then
+  gzip -dc "${tmp}.gz" 2>/dev/null | awk -v taxid="$taxid" -v minlen="$MIN_LEN" '
+    /^>/ { if (keep && length(seq) >= minlen) print taxid "\t" seq; seq=""; keep = ($0 ~ /\[product=16S ribosomal RNA\]/); next }
+    { seq = seq $0 }
+    END { if (keep && length(seq) >= minlen) print taxid "\t" seq }
+  ' >> "${PARTS}/part.$$.tsv"
+fi
+rm -f "$tmp" "${tmp}.gz"
+EOS
+chmod +x fetch_one.sh
 
-xargs -a targets.txt -P "$DOWNLOAD_JOBS" -n 2 bash -c 'fetch_one "$1" "$2"' _ || true
+xargs -a targets.txt -P "$DOWNLOAD_JOBS" -n 2 ./fetch_one.sh || true
 
-cat "${PARTS}"/part.*.tsv > raw.tsv 2>/dev/null || { echo "ERROR: no 16S extracted"; exit 1; }
+if ! ls "${PARTS}"/part.*.tsv >/dev/null 2>&1; then
+  echo "ERROR: no 16S extracted -- diagnosing the first assembly:"
+  read -r t f < targets.txt
+  b=$(basename "$f"); u="${f}/${b}_rna_from_genomic.fna.gz"
+  echo "  test URL : $u"
+  wget -O diag.gz "$u"; echo "  wget exit: $?"
+  ls -l diag.gz 2>/dev/null || true
+  echo "  16S records in that file: $(gzip -dc diag.gz 2>/dev/null | grep -c '16S ribosomal RNA')"
+  exit 1
+fi
+cat "${PARTS}"/part.*.tsv > raw.tsv
 echo "      $(wc -l < raw.tsv) raw 16S sequences"
 
 # ---- 3) dereplicate: unique (taxid, sequence) rows ----
