@@ -33,7 +33,7 @@ THREADS=${SLURM_CPUS_PER_TASK:-16}
 
 WORK="${OUT}/genome16s_build_${DATE}"
 PARTS="${WORK}/parts"
-mkdir -p "$PARTS"
+mkdir -p "$PARTS"   # NB: not wiped -- step 2 resumes from existing parts (see below)
 cd "$WORK"
 
 # ---- tools: use the conda env's binaries directly (no `conda` command in the batch job) ----
@@ -92,19 +92,25 @@ fi
 rm -f "$tmp" "${tmp}.gz"
 EOS
 
-xargs -a targets.txt -P "$DOWNLOAD_JOBS" -n 2 bash ./fetch_one.sh "$PARTS" "$MIN_LEN" || true
+# resume: if this build dir already holds extracted parts (a previous run finished the downloads
+# but tripped later), reuse them instead of re-hammering NCBI with ~70k requests.
+if find "$PARTS" -name 'part.*.tsv' -print -quit 2>/dev/null | grep -q .; then
+  echo "      existing parts found -- skipping download, reusing them"
+else
+  xargs -a targets.txt -P "$DOWNLOAD_JOBS" -n 2 bash ./fetch_one.sh "$PARTS" "$MIN_LEN" || true
+fi
 
-if ! ls "${PARTS}"/part.*.tsv >/dev/null 2>&1; then
+# concatenate with find, NOT a `part.*.tsv` glob: at ~50k files the glob overflows ARG_MAX and
+# fails ("Argument list too long") even though the files are perfectly fine.
+find "$PARTS" -name 'part.*.tsv' -exec cat {} + > raw.tsv
+if [ ! -s raw.tsv ]; then
   echo "ERROR: no 16S extracted -- diagnosing the first assembly:"
   read -r t f < targets.txt
   b=$(basename "$f"); u="${f}/${b}_rna_from_genomic.fna.gz"
-  echo "  test URL : $u"
-  wget -O diag.gz "$u"; echo "  wget exit: $?"
-  ls -l diag.gz 2>/dev/null || true
+  echo "  test URL : $u"; wget -O diag.gz "$u"; echo "  wget exit: $?"
   echo "  16S records in that file: $(gzip -dc diag.gz 2>/dev/null | grep -c '16S ribosomal RNA')"
   exit 1
 fi
-cat "${PARTS}"/part.*.tsv > raw.tsv
 echo "      $(wc -l < raw.tsv) raw 16S sequences"
 
 # ---- 3) dereplicate: unique (taxid, sequence) rows ----
