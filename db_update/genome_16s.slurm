@@ -45,17 +45,29 @@ export PATH="${DBTOOLS}/bin:${PATH}"
 echo "[1/5] fetching assembly summary"
 wget -q -O assembly_summary.txt https://ftp.ncbi.nlm.nih.gov/genomes/refseq/bacteria/assembly_summary.txt
 
-# cols: 6=taxid, 11=version_status, 12=assembly_level, 20=ftp_path, 21=excluded_from_refseq.
-# Filter on assembly_level (a QUALITY filter that keeps ALL strains) -- NOT refseq_category,
-# which is 1-per-species. $21=="" drops assemblies RefSeq has flagged (contaminated, chimeric,
-# derived-from-metagenome, too many frameshifts, anomalous length, etc.).
+# Resolve columns BY NAME from the header (NCBI adds/reorders columns over time), then filter.
+# assembly_level is a QUALITY filter that keeps ALL strains -- NOT refseq_category (1-per-species).
+# excluded_from_refseq is empty OR "na" when NOT excluded; a non-empty reason (contaminated,
+# chimeric, derived-from-metagenome, frameshifts, anomalous length) is what we drop.
 awk -F'\t' -v levels="$LEVELS" '
+  /^#assembly_accession/ { for (i=1;i<=NF;i++){ n=$i; sub(/^#/,"",n); c[n]=i } next }
   /^#/ { next }
-  $11=="latest" && $20!="na" && $21=="" && ($12 ~ "^(" levels ")$") {
-    ftp=$20; sub(/^ftp:\/\//, "https://", ftp); print $6, ftp   # force https (some rows are ftp://)
+  {
+    tax=$(c["taxid"]); vs=$(c["version_status"]); al=$(c["assembly_level"])
+    fp=$(c["ftp_path"]); ex=$(c["excluded_from_refseq"])
+    if (vs=="latest" && fp!="na" && fp!="" && (ex=="" || ex=="na") && al ~ "^(" levels ")$") {
+      sub(/^ftp:\/\//, "https://", fp); print tax, fp   # force https (some rows are ftp://)
+    }
   }
 ' assembly_summary.txt > targets.txt
 echo "      $(wc -l < targets.txt) assemblies to scan"
+
+if [ ! -s targets.txt ]; then
+  echo "ERROR: 0 assemblies after filtering -- header + first data row for inspection:"
+  grep -m1 '^#assembly_accession' assembly_summary.txt
+  grep -v '^#' assembly_summary.txt | head -1
+  exit 1
+fi
 
 # ---- 2) pull 16S from each assembly's annotated rna_from_genomic file, tag with its taxid ----
 # We fetch only the small *_rna_from_genomic.fna.gz (annotated rRNA/tRNA/ncRNA), not whole genomes,
