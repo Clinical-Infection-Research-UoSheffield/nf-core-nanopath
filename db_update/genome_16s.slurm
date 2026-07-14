@@ -73,27 +73,26 @@ fi
 # We fetch only the small *_rna_from_genomic.fna.gz (annotated rRNA/tRNA/ncRNA), not whole genomes,
 # and keep records whose defline says [product=16S ribosomal RNA]. Output: <taxid>\t<linearised seq>.
 echo "[2/5] downloading + extracting 16S (${DOWNLOAD_JOBS} parallel)"
-export PARTS MIN_LEN
 
-# per-assembly worker as a standalone script -- more robust than `export -f` + `bash -c`,
-# which doesn't reliably propagate the function in a batch shell. Reads PARTS/MIN_LEN from env.
+# per-assembly worker as a standalone script. Invoked via `bash ./fetch_one.sh` (NOT `./fetch_one.sh`)
+# because parscratch is typically mounted noexec -- you can't execve a file there, but bash can read
+# it. PARTS + MIN_LEN are passed as args (not env) so nothing depends on export propagation.
 cat > fetch_one.sh <<'EOS'
 #!/bin/bash
-taxid="$1"; ftp="$2"
+parts="$1"; minlen="$2"; taxid="$3"; ftp="$4"
 base=$(basename "$ftp")
 tmp=$(mktemp)
 if wget -q --tries=2 -O "${tmp}.gz" "${ftp}/${base}_rna_from_genomic.fna.gz" 2>/dev/null && [ -s "${tmp}.gz" ]; then
-  gzip -dc "${tmp}.gz" 2>/dev/null | awk -v taxid="$taxid" -v minlen="$MIN_LEN" '
+  gzip -dc "${tmp}.gz" 2>/dev/null | awk -v taxid="$taxid" -v minlen="$minlen" '
     /^>/ { if (keep && length(seq) >= minlen) print taxid "\t" seq; seq=""; keep = ($0 ~ /\[product=16S ribosomal RNA\]/); next }
     { seq = seq $0 }
     END { if (keep && length(seq) >= minlen) print taxid "\t" seq }
-  ' >> "${PARTS}/part.$$.tsv"
+  ' >> "${parts}/part.$$.tsv"
 fi
 rm -f "$tmp" "${tmp}.gz"
 EOS
-chmod +x fetch_one.sh
 
-xargs -a targets.txt -P "$DOWNLOAD_JOBS" -n 2 ./fetch_one.sh || true
+xargs -a targets.txt -P "$DOWNLOAD_JOBS" -n 2 bash ./fetch_one.sh "$PARTS" "$MIN_LEN" || true
 
 if ! ls "${PARTS}"/part.*.tsv >/dev/null 2>&1; then
   echo "ERROR: no 16S extracted -- diagnosing the first assembly:"
