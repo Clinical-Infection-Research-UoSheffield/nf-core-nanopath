@@ -560,8 +560,18 @@ def assess_cluster(recs, winner_token, neg_keys):
     ck = "" if call_species == "Uncertain" else _species_key(call_species)
     negctrl = "red" if ck and ck in neg_keys else "green"
 
+    # 5. classifier failure: any classifier that ran but returned no usable taxon (unclassified
+    #    or missing) is a FAILURE. It must never be silently dropped or counted as agreement, and
+    #    it always forces red -- a silent failure is the dangerous kind. (A genus-only call, e.g.
+    #    kraken2's LCA, still names a taxon: that's an abstention, not a failure.)
+    failed = [t for t in ("blast", "seqmatch", "kraken2")
+              if _rank1(recs.get(t, [])) is None
+              or _is_unclassified(_rank1(recs.get(t, []))["species"])]
+    if failed:
+        agreement = "red"
+
     return {"agreement": agreement, "close": close, "score": score,
-            "negctrl": negctrl, "call_species": call_species}
+            "negctrl": negctrl, "call_species": call_species, "failed": failed}
 
 
 def marinobacter_present(clusters, name=POS_CONTROL_SPECIES):
@@ -593,8 +603,8 @@ QC_CSS = """
 .qc-explain h4{margin:12px 0 2px;font-size:14px;font-weight:700}
 .qc-explain p{margin:0 0 4px}
 .qc .sci{font-style:italic}
-.qc .qc-detail{display:none}
-.qc .qc-detail:target{display:table-row}
+.qc .qc-detail{display:table-row}
+.qc .qc-detail:target>td{background:#eef6ff}
 .qc .qc-detail>td{background:#f6f8fa}
 .qc .qc-detail table{margin:8px 0 2px}
 .qc .reason{margin:2px 0 8px} .qc .reason .lamp{margin-right:8px}
@@ -647,8 +657,6 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
         info = cluster_info.get(str(cid), {})
         winner_token = _WIN_TOKEN.get(info.get("classifier", ""))
         a = assess_cluster(recs, winner_token, neg_keys)
-        if _is_unclassified(a["call_species"]):
-            continue   # unclassified clusters are not shown
         lights = {k: a[k] for k in ("agreement", "close", "score", "negctrl")}
         flagged = any(v != "green" for v in lights.values())
         anchor = "qc-{0}".format(cid)
@@ -661,6 +669,8 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
 
         if a["call_species"] == "Uncertain":
             sp_html = "<b>Uncertain</b>"
+        elif _is_unclassified(a["call_species"]):
+            sp_html = "<b>Unclassified</b>"
         else:
             sp_html = '<span class="sci">{0}</span>'.format(_esc(a["call_species"]))
 
@@ -681,7 +691,8 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
               '<i style="background:#16a34a"></i>confident '
               '<i style="background:#d97706"></i>interpret with care '
               '<i style="background:#dc2626"></i>unreliable / QC concern. '
-              'Click an amber/red light for detail; see "Details of the Quality Metrics" below for scoring.</p>')
+              'Any flagged cluster is explained in the detail row directly beneath it; '
+              'see "Details of the Quality Metrics" below for scoring.</p>')
 
     table = (
         '<table>'
@@ -699,7 +710,15 @@ def _map3(level):
 
 def _build_detail(cid, anchor, recs, a, lights):
     reasons = []
-    if lights["agreement"] != "green":
+    failed = a.get("failed", [])
+    if failed:
+        _lab = {"blast": "BLAST", "seqmatch": "SeqMatch", "kraken2": "kraken2"}
+        names = ", ".join(_lab[t] for t in failed)
+        reasons.append(("red",
+                        "<b>Classifier returned no call.</b> {0} produced no classification for "
+                        "this cluster &mdash; a database/run failure or a sequence with no database "
+                        "match. A missing classifier is never counted as agreement.".format(names)))
+    if not failed and lights["agreement"] != "green":
         calls = []
         for token, label in (("blast", "BLAST"), ("kraken2", "kraken2"), ("seqmatch", "SeqMatch")):
             r = _rank1(recs.get(token, []))
@@ -730,6 +749,11 @@ def _build_detail(cid, anchor, recs, a, lights):
     mini_rows = []
     for token, label in (("blast", "BLAST"), ("seqmatch", "SeqMatch"), ("kraken2", "kraken2")):
         real = [r for r in recs.get(token, []) if not _is_unclassified(r["species"])]
+        if not real:   # a failed/unclassified classifier is shown explicitly, not hidden
+            mini_rows.append(
+                '<tr><td>{lab}</td><td><i>no classification</i></td>'
+                '<td class="c">-</td></tr>'.format(lab=label))
+            continue
         for i, r in enumerate(real):
             if str(r.get("pct_identity", "")).strip():
                 score = _esc(r["pct_identity"]) + "%"
