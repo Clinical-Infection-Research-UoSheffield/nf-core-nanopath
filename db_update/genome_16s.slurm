@@ -139,6 +139,11 @@ makeblastdb -in blast.fasta -dbtype nucl -parse_seqids \
   -taxid_map taxid_map.txt -title "genome_16S_${DATE}" \
   -out "${BLAST_OUT}/genome_16S"
 
+# NCBI taxdb so `blastn -outfmt sscinames` resolves taxid -> species name. makeblastdb embeds
+# taxids but not the name lookup; without this the pipeline's BLAST step returns "N/A" -> Unclassified.
+wget -q -O "${BLAST_OUT}/taxdb.tar.gz" https://ftp.ncbi.nlm.nih.gov/blast/db/taxdb.tar.gz \
+  && tar xzf "${BLAST_OUT}/taxdb.tar.gz" -C "${BLAST_OUT}" && rm -f "${BLAST_OUT}/taxdb.tar.gz"
+
 # ---- 5b) kraken2 db (NCBI taxonomy; taxids already in the headers -> --skip-maps) ----
 echo "[5/5] building kraken2 db"
 KDB="${OUT}/kraken2_genome16S_${DATE}"
