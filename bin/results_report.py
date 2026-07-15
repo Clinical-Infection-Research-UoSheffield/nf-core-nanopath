@@ -247,7 +247,7 @@ def add_hit_details_section(reprt, hit_details_dir, chosen_classifier='none', to
         section.markdown("**Cluster {0}**".format(cid))
         for classifier_label, table in tables.items():
             section.markdown("_{0}_".format(classifier_label))
-            section.table(table, classes="larger-first-column")
+            section.markdown(_plain_table(table, classes="larger-first-column"))
 
 def read_patient_info(file, barcode):
     """
@@ -896,10 +896,42 @@ def parse_args():
         "--chosen_classifier", default='none',
         help="CSV mapping cluster -> winning classifier (from get_abundance.py). When "
              "given, each cluster shows only the classifier the pipeline selected for it")
+    parser.add_argument(
+        "--blast_db_name", default='n/a', help="folder name of the BLAST database used")
+    parser.add_argument(
+        "--kraken2_db_name", default='n/a', help="folder name of the kraken2 database used")
+    parser.add_argument(
+        "--seqmatch_db_name", default='n/a', help="folder name of the SeqMatch database used")
+    parser.add_argument(
+        "--taxonomy_name", default='n/a', help="file name of the taxonomy dump used")
 
     args = parser.parse_args()
 
     return(args)
+
+
+def _plain_table(df, classes=None):
+    """Render a DataFrame as a static HTML table (no Bokeh search box)."""
+    html = df.to_html(index=False, border=0, justify="left")
+    if classes:
+        html = html.replace('class="dataframe"',
+                            'class="dataframe {0}"'.format(classes), 1)
+    return html
+
+
+def _lookup_meta(metadata_table, label_substr, default="unknown"):
+    """Look up a value from the sample metadata by case-insensitive label substring."""
+    try:
+        m = metadata_table[metadata_table['Metadata'].astype(str)
+                          .str.contains(label_substr, case=False, na=False, regex=False)]
+        if len(m):
+            val = str(m['Sample Information'].iloc[0]).strip()
+            if val and val.lower() != "nan":
+                return val
+    except Exception:
+        logger.exception("metadata lookup failed for %s", label_substr)
+    return default
+
 
 def main(args):
     
@@ -913,7 +945,9 @@ def main(args):
             for index, row in patient.iloc[[0,2,1,4,6,7,10]].iterrows():
                 restructured.append(": ".join([str(row['Metadata']), str(row['Sample Information'])]))
             restructured.insert(4, " ".join(["Sequencing start:", args.seq_start]))
-            rest_df=pd.DataFrame(list(zip(restructured[:4],restructured[4:])), columns=['Sample Information', 'Time Stamps'])
+            left = restructured[:4] + ["Operator: " + _lookup_meta(patient, "operator")]
+            right = restructured[4:] + [""]
+            rest_df=pd.DataFrame(list(zip(left, right)), columns=['Sample Information', 'Time Stamps'])
 
             # Generate the report
             title="Patient " + patient.iloc[0,1] + " Report"
@@ -925,7 +959,7 @@ def main(args):
             ### Sample Information
             ''')
 
-            section.table(rest_df)
+            section.markdown(_plain_table(rest_df))
 
             section=reprt.add_section()
 
@@ -949,7 +983,9 @@ def main(args):
         for index, row in metadata_table.iloc[[0,2,1,4,6,7,10]].iterrows():
             restructured.append(": ".join([str(row['Metadata']), str(row['Sample Information'])]))
         restructured.insert(4, " ".join(["Sequencing start:", args.seq_start]))
-        rest_df=pd.DataFrame(list(zip(restructured[:4],restructured[4:])), columns=['Sample Information', 'Time Stamps'])
+        left = restructured[:4] + ["Operator: " + _lookup_meta(metadata_table, "operator")]
+        right = restructured[4:] + [""]
+        rest_df=pd.DataFrame(list(zip(left, right)), columns=['Sample Information', 'Time Stamps'])
 
         # Create the title for the report
         title="Patient " + metadata_table.iloc[0,1] + " Report"
@@ -963,7 +999,7 @@ def main(args):
         negative=process_controls(args.negative)
 
         reprt = report.UoSReport(
-            title=title, workflow="NanoCLUST", report_template=args.report_template,
+            title=title, workflow="NanoPATH", report_template=args.report_template,
             revision=args.revision, commit=args.commit, style='UoS', logo=args.logo)
 
         section=reprt.add_section()
@@ -971,7 +1007,7 @@ def main(args):
         ### Sample Information
         ''')
 
-        section.table(rest_df)
+        section.markdown(_plain_table(rest_df))
 
         section=reprt.add_section()
 
@@ -1027,7 +1063,7 @@ def main(args):
             Total reads in negative control: {0} 
             '''.format(negative['Number of Reads'].sum()))
 
-            section.table(negative, classes='larger-first-column')
+            section.markdown(_plain_table(negative, classes='larger-first-column'))
         else:
             section.markdown('''
             No species detected in negative control.
@@ -1044,7 +1080,7 @@ def main(args):
             Total reads in positive control: {0}
             '''.format(positive['Number of Reads'].sum()))
             
-            section.table(positive, classes='larger-first-column')
+            section.markdown(_plain_table(positive, classes='larger-first-column'))
         else:
             comment+=2
             section.markdown('''
@@ -1072,22 +1108,29 @@ def main(args):
         section=reprt.add_section()
         run_id=args.run_id
         barcoding_kit=args.kit
-        print(barcoding_kit)
         demux_method=args.demux
         species_database=metadata_table['Sample Information'].iloc[4]
         clustering_size=args.clustering_size
 
-        run_params=pd.DataFrame(list(zip(['Run ID: '+str(run_id), 'Barcoding kit: '+str(barcoding_kit), 'Demultiplex method: '+str(demux_method)], ['Species database: '+str(species_database), 'Clustering size: '+str(clustering_size), 'Sample barcode: '+str(metadata_table.iloc[1,1])])), columns=['GridIon properties', 'NanoCLUST properties'])
+        run_params=pd.DataFrame(list(zip(['Run ID: '+str(run_id), 'Barcoding kit: '+str(barcoding_kit), 'Demultiplex method: '+str(demux_method)], ['Species database: '+str(species_database), 'Clustering size: '+str(clustering_size), 'Sample barcode: '+str(metadata_table.iloc[1,1])])), columns=['GridION properties', 'NanoPATH properties'])
         #run_params.reset_index(drop=True, inplace=True)
 
         section.markdown('''
         ### Run parameters
         ''')
-        section.table(run_params)
+        section.markdown(_plain_table(run_params))
+
+        # databases actually used, per classification step (folder / file names)
+        db_rows = [("BLAST", args.blast_db_name), ("kraken2", args.kraken2_db_name),
+                   ("SeqMatch", args.seqmatch_db_name), ("Taxonomy", args.taxonomy_name)]
+        db_rows = [(step, name) for step, name in db_rows if name and name != "n/a"]
+        if db_rows:
+            section.markdown("<br/>**Databases used**")
+            section.markdown(_plain_table(pd.DataFrame(db_rows, columns=["Step", "Database used"])))
         section.markdown('''
         Sample was sequenced on a ONT GridION Mk1. 
-        Sequencing data was processed and analysed using a custom nanoclust pipeline.
-        {6}
+        Sequencing data was processed and analysed using the NanoPATH pipeline
+        ([Clinical-Infection-Research-UoSheffield/nf-core-nanopath](https://github.com/Clinical-Infection-Research-UoSheffield/nf-core-nanopath)).
 
         '''.format(run_id, barcoding_kit, demux_method, species_database, clustering_size, metadata_table.iloc[1,1], database_info))
 

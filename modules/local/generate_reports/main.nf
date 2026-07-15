@@ -13,6 +13,7 @@ process GENERATE_REPORTS {
     val(negative_control)
     tuple val(kit), val(run_id), val(seq_start)
     path(samplesheet)
+    tuple val(blast_db_name), val(kraken2_db_name), val(seqmatch_db_name), val(taxonomy_name)
 
     output:
     tuple val(meta), path("patient_report*.html"),   emit: report
@@ -49,8 +50,12 @@ process GENERATE_REPORTS {
         --run_id "${run_id}" \
         --seq_start "${seq_start}" \
         --hit_details . \
-        --chosen_classifier ${chosen_classifier}
-        
+        --chosen_classifier ${chosen_classifier} \
+        --blast_db_name "${blast_db_name}" \
+        --kraken2_db_name "${kraken2_db_name}" \
+        --seqmatch_db_name "${seqmatch_db_name}" \
+        --taxonomy_name "${taxonomy_name}"
+
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
         grep: \$(grep --version | head -n1 | cut -f 4 -d ' ')

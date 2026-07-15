@@ -315,12 +315,22 @@ workflow NANOPATH {
             .join(ch_hit_details, by: [0])
             .join(GET_ABUNDANCE.out.chosen, by: [0])
 
+        // folder / file names of the databases used, for display in the report's Run parameters.
+        // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.
+        ch_db_names = Channel.value([
+            params.blast_db    ? file(params.blast_db).parent.name : 'n/a',
+            params.kraken2_db  ? file(params.kraken2_db).name      : 'n/a',
+            params.seqmatch_db ? file(params.seqmatch_db).name     : 'n/a',
+            params.taxonomy    ? file(params.taxonomy).name        : 'n/a'
+        ])
+
         GENERATE_REPORTS(
             ch_reporting,
             ch_controls.positive.toList(),
             ch_controls.negative.toList(),
             ch_meta_final,
-            ch_input
+            ch_input,
+            ch_db_names
         )
     }
 

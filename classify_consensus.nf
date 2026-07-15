@@ -89,7 +89,13 @@ workflow {
             Channel.value('[None]'),                     // positive control (none)
             Channel.value('[None]'),                     // negative control (none)
             Channel.value([ params.kit ?: 'unknown', params.run_id ?: 'unknown', params.seq_start ?: 'unknown' ]),
-            file(params.input)
+            file(params.input),
+            Channel.value([                              // database names for the Run parameters table
+                params.blast_db    ? file(params.blast_db).parent.name : 'n/a',
+                params.kraken2_db  ? file(params.kraken2_db).name      : 'n/a',
+                params.seqmatch_db ? file(params.seqmatch_db).name     : 'n/a',
+                params.taxonomy    ? file(params.taxonomy).name        : 'n/a'
+            ])
         )
     }
 }
