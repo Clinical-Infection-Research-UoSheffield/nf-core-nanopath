@@ -233,7 +233,7 @@ workflow NANOPATH {
 
     // Check for racon success and print warning if success is 0
     RACON_PASS.out.final_draft.map {
-        meta, draft, log, corrected_reads, cluster_id, success ->
+        meta, draft, racon_log, corrected_reads, cluster_id, success ->
             if(success == "0"){
                 log.warn "Sample ${meta.id} : Racon correction for cluster ${cluster_id} failed due to not enough overlaps. Taking draft read as consensus"
             }
