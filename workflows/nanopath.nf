@@ -303,12 +303,12 @@ workflow NANOPATH {
 
     if(params.clinical && params.generateReports){
 
-        GET_ABUNDANCE.out.species_results.branch{
+        ch_controls = GET_ABUNDANCE.out.species_results.branch{
             negative: it[0].status == "negative control"
                 return it[1]
             positive: it[0].status == "positive control"
                 return it[1]
-        }.set { ch_controls }
+        }
 
         // Join the four reporting inputs by SAMPLE ID, not the whole meta map. With
         // remove_unclassified=true the reads detour through KRAKEN2_KRAKEN2, so the meta reaching
@@ -320,6 +320,13 @@ workflow NANOPATH {
             .join( ch_hit_details.map           { meta, f -> [ meta.id, f ] }, by: 0 )
             .join( GET_ABUNDANCE.out.chosen.map { meta, f -> [ meta.id, f ] }, by: 0 )
             .map { id, meta, sp, reads, hit, chosen -> [ meta, sp, reads, hit, chosen ] }
+
+        // --- TEMP diagnostic (remove once reporting is confirmed): which arm carries the sample? ---
+        GET_ABUNDANCE.out.species_results.view { "SP    ${it[0].id}" }
+        FASTP.out.reads.view                   { "READS ${it[0].id}" }
+        ch_hit_details.view                    { "HIT   ${it[0].id}" }
+        GET_ABUNDANCE.out.chosen.view          { "CHOS  ${it[0].id}" }
+        ch_reporting.view                      { "JOIN  ${it[0].id}" }
 
         // folder / file names of the databases used, for display in the report's Run parameters.
         // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.
