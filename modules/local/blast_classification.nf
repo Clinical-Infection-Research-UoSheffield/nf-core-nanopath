@@ -23,7 +23,7 @@ process BLAST_CLASSIFICATION {
     export BLASTDB=\$(dirname ${blast_db})
     blastn -query $consensus -db \$(basename ${blast_db}) -task megablast -dust no -outfmt '10 sscinames staxids evalue length pident bitscore' -evalue 11 -max_hsps 50 -max_target_seqs 100 | 
     sort -t ',' -k5nr -k6nr |
-    head -n5 | 
+    awk 'NR<=5' |
     sed 's/,/;/g' > ${prefix}_${cluster_id}_blastn_consensus_classification.csv
 
     if [ -s ${prefix}_${cluster_id}_blastn_consensus_classification.csv ]; then

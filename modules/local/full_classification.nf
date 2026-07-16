@@ -44,7 +44,7 @@ process FULL_CLASSIFICATION {
 
     echo "classifying with blastn"
     export BLASTDB=${blast_db_parent_dir}
-    blastn -query ${consensus} -db ${blast_db_prefix} -task megablast -dust no -outfmt '10 sscinames staxids evalue length pident bitscore' -evalue 11 -max_hsps 50 -max_target_seqs 100 | sort -t ',' -k5nr -k6nr | head -n5 | sed 's/,/;/g' > ${prefix}_${cluster_id}_blastn_consensus_classification.csv
+    blastn -query ${consensus} -db ${blast_db_prefix} -task megablast -dust no -outfmt '10 sscinames staxids evalue length pident bitscore' -evalue 11 -max_hsps 50 -max_target_seqs 100 | sort -t ',' -k5nr -k6nr | awk 'NR<=5' | sed 's/,/;/g' > ${prefix}_${cluster_id}_blastn_consensus_classification.csv
     if [ -s ${prefix}_${cluster_id}_blastn_consensus_classification.csv ]; then
         echo "success"
     else
