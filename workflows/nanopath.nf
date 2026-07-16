@@ -321,13 +321,6 @@ workflow NANOPATH {
             .join( GET_ABUNDANCE.out.chosen.map { meta, f -> [ meta.id, f ] }, by: 0 )
             .map { id, meta, sp, reads, hit, chosen -> [ meta, sp, reads, hit, chosen ] }
 
-        // --- TEMP diagnostic (remove once reporting is confirmed): which arm carries the sample? ---
-        GET_ABUNDANCE.out.species_results.view { "SP    ${it[0].id}" }
-        FASTP.out.reads.view                   { "READS ${it[0].id}" }
-        ch_hit_details.view                    { "HIT   ${it[0].id}" }
-        GET_ABUNDANCE.out.chosen.view          { "CHOS  ${it[0].id}" }
-        ch_reporting.view                      { "JOIN  ${it[0].id}" }
-
         // folder / file names of the databases used, for display in the report's Run parameters.
         // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.
         ch_db_names = Channel.value([
