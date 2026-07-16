@@ -310,10 +310,16 @@ workflow NANOPATH {
                 return it[1]
         }.set { ch_controls }
 
+        // Join the four reporting inputs by SAMPLE ID, not the whole meta map. With
+        // remove_unclassified=true the reads detour through KRAKEN2_KRAKEN2, so the meta reaching
+        // GET_ABUNDANCE can differ from FASTP.out.reads' meta by a field; a full-map inner join
+        // then silently drops the sample and no report is produced. meta.id is stable across paths.
         ch_reporting = GET_ABUNDANCE.out.species_results
-            .join(FASTP.out.reads, by: [0])
-            .join(ch_hit_details, by: [0])
-            .join(GET_ABUNDANCE.out.chosen, by: [0])
+            .map { meta, f -> [ meta.id, meta, f ] }
+            .join( FASTP.out.reads.map          { meta, f -> [ meta.id, f ] }, by: 0 )
+            .join( ch_hit_details.map           { meta, f -> [ meta.id, f ] }, by: 0 )
+            .join( GET_ABUNDANCE.out.chosen.map { meta, f -> [ meta.id, f ] }, by: 0 )
+            .map { id, meta, sp, reads, hit, chosen -> [ meta, sp, reads, hit, chosen ] }
 
         // folder / file names of the databases used, for display in the report's Run parameters.
         // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.
