@@ -132,8 +132,12 @@ workflow NANOPATH {
             ch_metadata_files.collect()
         )
         // .first() turns this into a value channel so it is reused for every barcode
-        // (otherwise GENERATE_REPORTS, having two queue inputs, runs only once)
-        ch_meta_final = PROCESS_METADATA.out.metadata.first()
+        // (otherwise GENERATE_REPORTS, having two queue inputs, runs only once).
+        // .ifEmpty(...) guarantees a value even if PROCESS_METADATA emits no metadata -- otherwise
+        // ch_meta_final is empty and GENERATE_REPORTS starves (runs zero times, no report).
+        ch_meta_final = PROCESS_METADATA.out.metadata
+            .ifEmpty([params.kit, params.run_id, params.seq_start])
+            .first()
     } else {
         ch_meta_final = Channel.value([params.kit, params.run_id, params.seq_start])
     }
