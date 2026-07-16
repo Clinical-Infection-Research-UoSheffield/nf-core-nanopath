@@ -17,28 +17,33 @@
  *       --outdir consensus_out \
  *       [--input experiment_info.xlsx]     # add this to also build the patient report
  *
- * The FASTA should contain a SINGLE consensus sequence (one cluster). To classify several,
- * run it once per FASTA (or extend the input channel below).
+ * --consensus accepts EITHER a single FASTA (one or more records) OR a quoted glob matching
+ * several per-cluster FASTAs -- e.g. the separate consensus file Medaka emits for each cluster:
+ *     --consensus 'medaka_out/*.fasta'      (quote it so Nextflow globs, not the shell)
+ * Each record, across all matched files, becomes its own cluster (numbered 0..N-1) and all are
+ * combined into a single sample report, exactly like a real run with several clusters. For
+ * several INDEPENDENT samples (a separate report each), run the wrapper once per sample.
  */
 nextflow.enable.dsl = 2
 
-params.fake_reads = 100   // stand-in read count for the single cluster
+params.fake_reads = 100   // stand-in read count assigned to every cluster (-> even abundances)
 
 include { FULL_CLASSIFICATION } from './modules/local/full_classification'
 include { JOIN_RESULTS        } from './modules/local/join_results'
 include { GET_ABUNDANCE       } from './modules/local/get_abundance/main'
 include { GENERATE_REPORTS    } from './modules/local/generate_reports/main'
 
-// Recreate the per-cluster "cluster log" that SPLIT_CLUSTERS normally makes: "<id>;<reads>"
+// Recreate the per-cluster "cluster log" that SPLIT_CLUSTERS normally makes: "<id>;<reads>".
+// One instance per consensus record, so a multi-sequence FASTA becomes several clusters.
 process STAGE_CONSENSUS {
-    tag "$meta.id"
+    tag "${meta.id}_${cluster_id}"
     input:
-    tuple val(meta), path(consensus)
+    tuple val(meta), path(consensus), val(cluster_id)
     output:
-    tuple val(meta), path(consensus), path("cluster.log"), val(0)
+    tuple val(meta), path(consensus), path("cluster.log"), val(cluster_id)
     script:
     """
-    printf '0;%s' "${params.fake_reads ?: 100}" > cluster.log
+    printf '%s;%s' "${cluster_id}" "${params.fake_reads ?: 100}" > cluster.log
     """
 }
 
@@ -61,7 +66,13 @@ workflow {
                  status        : params.status ?: 'sample',
                  specimen_number: params.specimen ?: (params.barcode ?: 'CONSENSUS') ]
 
-    STAGE_CONSENSUS( Channel.of( [ meta, file(params.consensus) ] ) )
+    // one cluster per record: split the (possibly multi-sequence) FASTA and number them 0..N-1
+    ch_clusters = Channel.fromPath( params.consensus )
+        .splitFasta( file: true )
+        .toList()
+        .flatMap { recs -> recs.withIndex().collect { rec, i -> [ meta, rec, i ] } }
+
+    STAGE_CONSENSUS( ch_clusters )
 
     def blast_parent = file(params.blast_db).parent
     def blast_name   = file(params.blast_db).getBaseName()

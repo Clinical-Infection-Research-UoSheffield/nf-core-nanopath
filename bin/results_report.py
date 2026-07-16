@@ -273,6 +273,11 @@ def read_patient_info(file, barcode):
             relevant_row.append(single_df)
     else:
         relevant_rows=info.loc[info['Barcode'] == barcode]
+        if relevant_rows.empty:
+            raise SystemExit(
+                "ERROR: barcode '{0}' not found in samplesheet '{1}'. "
+                "Barcodes present: {2}".format(
+                    barcode, file, ", ".join(map(str, info['Barcode'].tolist()))))
         #move row names into a column
         relevant_row=relevant_rows.transpose()
         relevant_row.index.name = 'Metadata'
