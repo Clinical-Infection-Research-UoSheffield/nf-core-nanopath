@@ -9,6 +9,7 @@ import os
 import glob
 import re
 import logging
+import datetime
 import numpy as np
 from bokeh.resources import INLINE
 
@@ -1013,7 +1014,7 @@ def main(args):
                 restructured.append(": ".join([str(row['Metadata']), str(row['Sample Information'])]))
             restructured.insert(4, " ".join(["Sequencing start:", args.seq_start]))
             left = restructured[:4] + ["Operator: " + _lookup_meta(patient, "operator")]
-            right = restructured[4:] + [""]
+            right = restructured[4:] + ["Analysis completed: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M")]
             rest_df=pd.DataFrame(list(zip(left, right)), columns=['Sample Information', 'Time Stamps'])
 
             # Generate the report
@@ -1051,7 +1052,7 @@ def main(args):
             restructured.append(": ".join([str(row['Metadata']), str(row['Sample Information'])]))
         restructured.insert(4, " ".join(["Sequencing start:", args.seq_start]))
         left = restructured[:4] + ["Operator: " + _lookup_meta(metadata_table, "operator")]
-        right = restructured[4:] + [""]
+        right = restructured[4:] + ["Analysis completed: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M")]
         rest_df=pd.DataFrame(list(zip(left, right)), columns=['Sample Information', 'Time Stamps'])
 
         # Create the title for the report
