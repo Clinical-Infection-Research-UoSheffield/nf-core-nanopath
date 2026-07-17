@@ -21,7 +21,7 @@ process GENERATE_REPORTS {
     path "versions.yml",                              emit: versions
 
     script:
-    def revision=workflow.revision
+    def revision = workflow.revision ?: workflow.manifest.version ?: 'unknown'
     def clustering_size=params.umap_set_size
     def report_template="$projectDir/assets/UoS_report_template.html"
     def logo="$projectDir/assets/UoS_white_logo.txt"
@@ -49,6 +49,7 @@ process GENERATE_REPORTS {
         --logo ${logo} \
         --run_id "${run_id}" \
         --seq_start "${seq_start}" \
+        --revision "${revision}" \
         --hit_details . \
         --chosen_classifier ${chosen_classifier} \
         --cluster_logs . \

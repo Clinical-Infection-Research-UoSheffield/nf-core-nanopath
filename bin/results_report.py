@@ -822,8 +822,7 @@ def internal_control_html(hit_details_dir, name=POS_CONTROL_SPECIES):
     if present:
         msg = "Internal spike control <i>{0}</i> detected.".format(_esc(name))
     else:
-        msg = ('Internal spike control <i>{0}</i> <font color="red">NOT detected &mdash; the run '
-               'may have failed and results should be treated with caution</font>.'.format(_esc(name)))
+        msg = ('Internal spike control <i>{0}</i> <font color="red">NOT detected</font>.'.format(_esc(name)))
     return '<br/>\n<b>INTERNAL CONTROL</b><br/>\n{0}{1}'.format(dot, msg)
 
 
@@ -1068,7 +1067,7 @@ def main(args):
 
         reprt = report.UoSReport(
             title=title, workflow="NanoPATH", report_template=args.report_template,
-            revision=args.revision, commit=args.commit, style='UoS', logo=args.logo)
+            revision=args.revision, commit='', style='UoS', logo=args.logo)
 
         section=reprt.add_section()
         section.markdown('''
