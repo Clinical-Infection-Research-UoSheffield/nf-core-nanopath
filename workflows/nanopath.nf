@@ -131,9 +131,15 @@ workflow NANOPATH {
         PROCESS_METADATA (
             ch_metadata_files.collect()
         )
+        // .first() turns this into a value channel so it is reused for every barcode
+        // (otherwise GENERATE_REPORTS, having two queue inputs, runs only once).
+        // .ifEmpty(...) guarantees a value even if PROCESS_METADATA emits no metadata -- otherwise
+        // ch_meta_final is empty and GENERATE_REPORTS starves (runs zero times, no report).
         ch_meta_final = PROCESS_METADATA.out.metadata
+            .ifEmpty([params.kit, params.run_id, params.seq_start])
+            .first()
     } else {
-        ch_meta_final = Channel.of([params.kit, params.run_id, params.seq_start])
+        ch_meta_final = Channel.value([params.kit, params.run_id, params.seq_start])
     }
 
     FASTP (
@@ -205,7 +211,7 @@ workflow NANOPATH {
 
     SPLIT_CLUSTERS.out.reads.map {
         meta, reads, log, cluster_id ->
-            clusters = cluster_id.split(" ").collect { it.toInteger() }
+            clusters = cluster_id.tokenize().collect { it.toInteger() }
             [meta, reads, log, clusters]
     }.transpose().set {ch_split_cluster}
 
@@ -231,7 +237,7 @@ workflow NANOPATH {
 
     // Check for racon success and print warning if success is 0
     RACON_PASS.out.final_draft.map {
-        meta, draft, log, corrected_reads, cluster_id, success ->
+        meta, draft, racon_log, corrected_reads, cluster_id, success ->
             if(success == "0"){
                 log.warn "Sample ${meta.id} : Racon correction for cluster ${cluster_id} failed due to not enough overlaps. Taking draft read as consensus"
             }
@@ -257,12 +263,14 @@ workflow NANOPATH {
             blast_db_name
         )
         ch_join_results = FULL_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = FULL_CLASSIFICATION.out.classification.groupTuple()
     } else if(params.classification == "blast"){
         BLAST_CLASSIFICATION (
             MEDAKA_PASS.out.consensus,
             params.blast_db
         )
         ch_join_results = BLAST_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = BLAST_CLASSIFICATION.out.classification.groupTuple()
     } else if(params.classification == "seqmatch"){
         SEQMATCH_CLASSIFICATION (
             MEDAKA_PASS.out.consensus,
@@ -270,13 +278,19 @@ workflow NANOPATH {
             params.seqmatch_accession
         )
         ch_join_results = SEQMATCH_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = SEQMATCH_CLASSIFICATION.out.classification.groupTuple()
     } else {
         KRAKEN2_CLASSIFICATION (
             MEDAKA_PASS.out.consensus,
             params.kraken2_db
         )
         ch_join_results = KRAKEN2_CLASSIFICATION.out.log.groupTuple()
+        ch_hit_details  = KRAKEN2_CLASSIFICATION.out.classification.groupTuple()
     }
+
+    // classification.groupTuple() nests each cluster's file list, giving a list-of-lists;
+    // flatten to a single list of paths so GENERATE_REPORTS' `path(hit_details)` accepts it
+    ch_hit_details = ch_hit_details.map { meta, files -> [ meta, files.flatten() ] }
 
     JOIN_RESULTS (
         ch_join_results,
@@ -293,21 +307,45 @@ workflow NANOPATH {
 
     if(params.clinical && params.generateReports){
 
-        GET_ABUNDANCE.out.species_results.branch{
+        ch_controls = GET_ABUNDANCE.out.species_results.branch{
             negative: it[0].status == "negative control"
                 return it[1]
             positive: it[0].status == "positive control"
                 return it[1]
-        }.set { ch_controls }
+        }
 
-        ch_reporting = GET_ABUNDANCE.out.species_results.join(FASTP.out.reads, by: [0])
+        // Join the four reporting inputs by SAMPLE ID, not the whole meta map. With
+        // remove_unclassified=true the reads detour through KRAKEN2_KRAKEN2, so the meta reaching
+        // GET_ABUNDANCE can differ from FASTP.out.reads' meta by a field; a full-map inner join
+        // then silently drops the sample and no report is produced. meta.id is stable across paths.
+        // every cluster the sample formed (SPLIT_CLUSTERS '<id>.log' files), so the report can
+        // flag clusters that never produced a consensus (canu/racon failures) as unidentified.
+        ch_all_clusters = SPLIT_CLUSTERS.out.reads.map { meta, reads, logs, cid -> [ meta, logs ] }
+
+        ch_reporting = GET_ABUNDANCE.out.species_results
+            .map { meta, f -> [ meta.id, meta, f ] }
+            .join( FASTP.out.reads.map          { meta, f -> [ meta.id, f ] }, by: 0 )
+            .join( ch_hit_details.map           { meta, f -> [ meta.id, f ] }, by: 0 )
+            .join( GET_ABUNDANCE.out.chosen.map { meta, f -> [ meta.id, f ] }, by: 0 )
+            .join( ch_all_clusters.map          { meta, f -> [ meta.id, f ] }, by: 0 )
+            .map { id, meta, sp, reads, hit, chosen, clusters -> [ meta, sp, reads, hit, chosen, clusters ] }
+
+        // folder / file names of the databases used, for display in the report's Run parameters.
+        // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.
+        ch_db_names = Channel.value([
+            params.blast_db    ? file(params.blast_db).parent.name : 'n/a',
+            params.kraken2_db  ? file(params.kraken2_db).name      : 'n/a',
+            params.seqmatch_db ? file(params.seqmatch_db).name     : 'n/a',
+            params.taxonomy    ? file(params.taxonomy).name        : 'n/a'
+        ])
 
         GENERATE_REPORTS(
             ch_reporting,
             ch_controls.positive.toList(),
             ch_controls.negative.toList(),
             ch_meta_final,
-            ch_input
+            ch_input,
+            ch_db_names
         )
     }
 

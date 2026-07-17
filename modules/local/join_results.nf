@@ -3,9 +3,13 @@ process JOIN_RESULTS {
     label 'process_single'
 
     conda "bioconda::grep=3.4"
+    // NB: the bare 'ubuntu' image ships a `date` whose `+%s%3N` output makes Nextflow's
+    // nxf_date helper return "Unexpected: ...", which crashes .command.run under `set -u`
+    // for this sub-second task. Use an image whose `date` behaves (and which still has the
+    // GNU `cut --output-delimiter` this script needs).
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'docker://ubuntu' :
-        'docker.io/ubuntu' }"
+        'docker://mbdabrowska1/full-classification:1.0' :
+        'docker.io/mbdabrowska1/full-classification:1.0' }"
 
     input:
     tuple val(meta), path(logs)
@@ -41,6 +45,11 @@ process JOIN_RESULTS {
             echo -e "\n" >> ${prefix}.nanoclust_out.txt
         done
         sed -i 's/.\$//' ${prefix}.nanoclust_out.txt
+
+        # This process finishes in milliseconds; give Nextflow's resource sampler time to
+        # read /proc/<pid> before the task exits, otherwise .command.run crashes with a
+        # 'set -u' unbound-variable error under Apptainer.
+        sleep 3
 
         cat <<-END_VERSIONS > versions.yml
         "${task.process}":
