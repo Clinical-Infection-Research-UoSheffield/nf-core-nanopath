@@ -827,7 +827,62 @@ def internal_control_html(hit_details_dir, name=POS_CONTROL_SPECIES):
     return '<br/>\n<b>INTERNAL CONTROL</b><br/>\n{0}{1}'.format(dot, msg)
 
 
-def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species=None, top_n=TOP_N_HITS):
+def load_all_clusters(cluster_logs_dir):
+    """Read SPLIT_CLUSTERS per-cluster logs ('<id>;<reads>') -> {cluster_id: reads}.
+
+    The ground-truth set of every cluster the sample formed -- including those that never
+    produced a consensus (canu/racon failures) and so were never classified.
+    """
+    clusters = {}
+    if (not cluster_logs_dir or cluster_logs_dir in ("none", "unknown")
+            or not os.path.isdir(cluster_logs_dir)):
+        return clusters
+    for f in glob.glob(os.path.join(cluster_logs_dir, "*.log")):
+        if not re.match(r"^\d+\.log$", os.path.basename(f)):
+            continue   # SPLIT_CLUSTERS logs are named "<id>.log"; ignore other .log files
+        try:
+            with open(f) as fh:
+                m = re.match(r"^\s*(\d+)\s*;\s*(\d+)", fh.read().strip())
+            if m:
+                clusters[m.group(1)] = int(m.group(2))
+        except Exception:
+            logger.exception("failed reading cluster log %s", f)
+    return clusters
+
+
+def build_dropped_clusters_html(cluster_logs_dir, classified_ids, min_pct=SHOW_MIN_ABUNDANCE):
+    """QC block for clusters that formed but never produced a consensus (so were not identified).
+
+    A consensus-based pipeline cannot classify a cluster with no consensus, but these must not
+    vanish silently -- an abundant unidentified cluster is a clinical concern.
+    """
+    all_clusters = load_all_clusters(cluster_logs_dir)
+    if not all_clusters:
+        return ""
+    classified = {str(c) for c in classified_ids}
+    dropped = {cid: reads for cid, reads in all_clusters.items() if str(cid) not in classified}
+    if not dropped:
+        return ""
+    total = sum(all_clusters.values()) or 1
+    dropped_reads = sum(dropped.values())
+    dropped_pct = dropped_reads / total * 100.0
+    level = "red" if dropped_pct >= min_pct else "amber"
+    rows = "".join(
+        '<tr><td>{0}</td><td class="c">{1} ({2:.1f}%)</td></tr>'.format(
+            _esc(cid), reads, reads / total * 100.0)
+        for cid, reads in sorted(dropped.items(), key=lambda kv: -kv[1]))
+    table = ('<table><thead><tr><th>Cluster</th><th class="c">Reads (%)</th></tr></thead>'
+             '<tbody>' + rows + '</tbody></table>')
+    note = ('<p class="reason ' + _map3(level) + '"><span class="lamp"></span>'
+            '<b>Unassembled clusters &mdash; not identified.</b> '
+            '{n} cluster(s) totalling {r} reads ({p:.1f}% of clustered reads) could not be '
+            'assembled into a consensus and were therefore not classified. A consensus-based '
+            'method cannot identify these; treat a large unidentified fraction with care.</p>'
+            .format(n=len(dropped), r=dropped_reads, p=dropped_pct))
+    return QC_CSS + '<div class="qc">' + note + table + '</div>'
+
+
+def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species=None, top_n=TOP_N_HITS, cluster_logs_dir="none"):
     """Add the per-cluster QC traffic-light section to the report."""
     clusters = collect_cluster_records(hit_details_dir, top_n)
     if not clusters:
@@ -839,6 +894,10 @@ def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species
     section = reprt.add_section()
     section.markdown("<br/>\n### Sequence identification & QC\n")
     section.markdown(html)
+    # clusters that formed but never produced a consensus (canu/racon failures) -> surface, not silent
+    dropped_html = build_dropped_clusters_html(cluster_logs_dir, clusters.keys())
+    if dropped_html:
+        section.markdown(dropped_html)
     section.markdown(build_qc_explanations())
 
 
@@ -909,6 +968,10 @@ def parse_args():
         "--seqmatch_db_name", default='n/a', help="folder name of the SeqMatch database used")
     parser.add_argument(
         "--taxonomy_name", default='n/a', help="file name of the taxonomy dump used")
+    parser.add_argument(
+        "--cluster_logs", default='none',
+        help="Directory holding SPLIT_CLUSTERS '<id>.log' files (every cluster + its read count). "
+             "Used to flag clusters that formed but never produced a consensus (unidentified).")
 
     args = parser.parse_args()
 
@@ -1045,7 +1108,8 @@ def main(args):
         # Per-cluster QC traffic lights (agreement, close hits, absolute score, neg-control
         # match) plus the Marinobacter nauticus positive-control spike check
         neg_species = list(negative['Detected Species']) if negative is not None else []
-        add_qc_section(reprt, args.hit_details, args.chosen_classifier, neg_species)
+        add_qc_section(reprt, args.hit_details, args.chosen_classifier, neg_species,
+                       cluster_logs_dir=args.cluster_logs)
 
         # Full machine-readable record: top hits for every classifier, all clusters
         write_hit_details_csv(

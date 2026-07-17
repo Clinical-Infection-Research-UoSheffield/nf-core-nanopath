@@ -190,7 +190,7 @@ All results are written to the directory specified with `--outdir`. The table be
 
 ## Credits
 
-nf-core/nanopath was originally written by Magdalena Dabrowska as a project within the Universiy of Sheffield.
+nf-core/nanopath was originally written by Magdalena Dabrowska as a project within the Universiy of Sheffield. v1.1.0 was written by Jack W Goodall. 
 
 ## Citations
 

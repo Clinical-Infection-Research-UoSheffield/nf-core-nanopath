@@ -318,12 +318,17 @@ workflow NANOPATH {
         // remove_unclassified=true the reads detour through KRAKEN2_KRAKEN2, so the meta reaching
         // GET_ABUNDANCE can differ from FASTP.out.reads' meta by a field; a full-map inner join
         // then silently drops the sample and no report is produced. meta.id is stable across paths.
+        // every cluster the sample formed (SPLIT_CLUSTERS '<id>.log' files), so the report can
+        // flag clusters that never produced a consensus (canu/racon failures) as unidentified.
+        ch_all_clusters = SPLIT_CLUSTERS.out.reads.map { meta, reads, logs, cid -> [ meta, logs ] }
+
         ch_reporting = GET_ABUNDANCE.out.species_results
             .map { meta, f -> [ meta.id, meta, f ] }
             .join( FASTP.out.reads.map          { meta, f -> [ meta.id, f ] }, by: 0 )
             .join( ch_hit_details.map           { meta, f -> [ meta.id, f ] }, by: 0 )
             .join( GET_ABUNDANCE.out.chosen.map { meta, f -> [ meta.id, f ] }, by: 0 )
-            .map { id, meta, sp, reads, hit, chosen -> [ meta, sp, reads, hit, chosen ] }
+            .join( ch_all_clusters.map          { meta, f -> [ meta.id, f ] }, by: 0 )
+            .map { id, meta, sp, reads, hit, chosen, clusters -> [ meta, sp, reads, hit, chosen, clusters ] }
 
         // folder / file names of the databases used, for display in the report's Run parameters.
         // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.
