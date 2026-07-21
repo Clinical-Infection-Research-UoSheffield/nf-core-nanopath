@@ -19,26 +19,16 @@ def parse_args():
 
     return parser.parse_args()
 
-def get_taxname(tax_id,tax_level):
-    tags = {"S": "species_name","G": "genus_name","F": "family_name","O":'order_name', "C": "class_name"}
-    tax_level_tag = tags[tax_level]
-    #Avoids pipeline crash due to "nan" classification output. Thanks to Qi-Maria from Github
+def get_taxname(tax_id, tax_level):
+    # Offline-safe. Taxonomy names come from the local dmp (see get_taxname_from_dmp). This
+    # previously queried api.unipept.ugent.be, which is fatal on an offline instrument; it now
+    # never contacts the internet and just returns a sensible local fallback.
     if str(tax_id) == "nan":
-        tax_id = 1
-    
-    path = 'http://api.unipept.ugent.be/api/v1/taxonomy.json?input[]=' + str(int(tax_id)) + '&extra=true&names=true'
-    complete_tax = requests.get(path).text
-
-    #Checks for API correct response (field containing the tax name). Thanks to devinbrown from Github
+        return "unclassified"
     try:
-        name = json.loads(complete_tax)[0][tax_level_tag]
-        if name == "":
-            name = json.loads(complete_tax)[0]["taxon_name"]
-    except:
-        logger.error("Error retrieving taxonomic name for tax_id {tax_id} at level {tax_level}.".format(tax_id=tax_id, tax_level=tax_level))
-        name = str(int(tax_id))
-
-    return name
+        return str(int(tax_id))
+    except (ValueError, TypeError):
+        return "unclassified"
 
 
 def get_taxname_from_dmp(data, tax_id, tax_level):
@@ -46,15 +36,16 @@ def get_taxname_from_dmp(data, tax_id, tax_level):
     tax_level_tag = tags[tax_level]
 
     if str(tax_id) == "nan":
-        name = 'unclassified'
-    else:
-        name = data.loc[data['taxid'] == tax_id, tax_level_tag].iloc[0]
-        if type(name) != str:
-            name = data.loc[data['taxid'] == tax_id, "name"].iloc[0]
-            if type(name) != str:
-                name = data.loc[data['taxid'] == tax_id, "sciname"].iloc[0]
-
-    return name
+        return 'unclassified'
+    match = data.loc[data['taxid'] == tax_id]
+    if match.empty:
+        return 'unclassified'   # taxid not in the classification table (e.g. root/unresolved)
+    name = match[tax_level_tag].iloc[0]
+    if not isinstance(name, str):
+        name = match["name"].iloc[0] if "name" in match.columns else None
+        if not isinstance(name, str):
+            name = match["sciname"].iloc[0] if "sciname" in match.columns else str(tax_id)
+    return name if isinstance(name, str) else str(tax_id)
 
 
 def get_abundance_values(names,paths):
@@ -173,7 +164,7 @@ def merge_abundance(dfs, data, tax_level):
             if tax_level == "S" and row["taxid"] in [1280, 985002, 1654388]:
                 all_tax.append("Staphylococcus aureus complex")
             else:
-                all_tax.append(get_taxname(row["taxid"], tax_level))
+                all_tax.append("unclassified")   # offline: never contact the taxonomy API
 
     df_final["taxid"] = all_tax
 
