@@ -153,10 +153,22 @@ kraken2-build --db "$KDB" --add-to-library "${WORK}/kraken.fasta"
 kraken2-build --db "$KDB" --build --threads "$THREADS"
 kraken2-build --db "$KDB" --clean
 
+# ---- 6) matching taxonomy (rankedlineage.dmp) from the SAME NCBI snapshot ----
+# Ship this ALONGSIDE the dbs and point the pipeline's --taxonomy at it, so DB taxids and the
+# taxonomy names are always the same vintage and can never drift apart (a mismatch leaves
+# classified organisms un-nameable). new_taxdump covers every NCBI taxid -- exactly the namespace
+# the RefSeq genome db and the NCBI 16S db both use, so one dump names them all.
+echo "[+ taxonomy] fetching matching rankedlineage.dmp"
+wget -q -O "${OUT}/new_taxdump_${DATE}.tar.gz" https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/new_taxdump/new_taxdump.tar.gz
+tar xzf "${OUT}/new_taxdump_${DATE}.tar.gz" -C "$OUT" rankedlineage.dmp
+mv -f "${OUT}/rankedlineage.dmp" "${OUT}/rankedlineage_${DATE}.dmp"
+rm -f "${OUT}/new_taxdump_${DATE}.tar.gz"
+
 echo
 echo "Done."
 echo "  --blast_db   ${BLAST_OUT}/genome_16S"
 echo "  --kraken2_db ${KDB}"
+echo "  --taxonomy   ${OUT}/rankedlineage_${DATE}.dmp   (same NCBI snapshot as the dbs)"
 echo "Sanity checks:"
 echo "  blastdbcmd -db ${BLAST_OUT}/genome_16S -taxids 727 -outfmt '%a %T' | wc -l   # Hflu 16S count"
 echo "  kraken2-inspect --db ${KDB} | head"

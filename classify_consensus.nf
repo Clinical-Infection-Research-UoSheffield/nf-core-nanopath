@@ -94,7 +94,7 @@ workflow {
             .combine( DUMMY_FASTQ.out )                 // [meta, rel_abundance_S.csv, dummy.fastq.gz]
             .join( ch_hit, by: 0 )                       // + hit-detail csvs
             .join( GET_ABUNDANCE.out.chosen, by: 0 )     // + chosen_classifier.csv
-            .map { it + [ [] ] }                         // + (empty) cluster logs: consensus is supplied directly, nothing dropped
+            .map { it + [ [], [] ] }                     // + (empty) cluster logs + racon-failed list: consensus supplied directly
 
         GENERATE_REPORTS(
             ch_report,

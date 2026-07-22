@@ -10,6 +10,10 @@ import logging
 
 logger = logging.getLogger()
 
+# taxids that were classified but couldn't be resolved to a name from the taxonomy dump -- a sign
+# the taxonomy (rankedlineage.dmp) doesn't match the reference databases. Collected and reported loudly.
+UNRESOLVED_TAXIDS = set()
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -43,9 +47,14 @@ def get_taxname_from_dmp(data, tax_id, tax_level):
     name = match[tax_level_tag].iloc[0]
     if not isinstance(name, str):
         name = match["name"].iloc[0] if "name" in match.columns else None
-        if not isinstance(name, str):
-            name = match["sciname"].iloc[0] if "sciname" in match.columns else str(tax_id)
-    return name if isinstance(name, str) else str(tax_id)
+    if not isinstance(name, str):
+        name = match["sciname"].iloc[0] if "sciname" in match.columns else None
+    if isinstance(name, str):
+        return name
+    # The taxid was classified but has no lineage in the supplied taxonomy: rankedlineage.dmp
+    # doesn't match the reference databases. Record it so main() can warn loudly.
+    UNRESOLVED_TAXIDS.add(str(tax_id))
+    return str(tax_id)
 
 
 def get_abundance_values(names,paths):
@@ -190,12 +199,48 @@ def get_abundance(names,paths,tax_level, outfile):
     df_final_grp.to_csv(outfile + "_"+ names[0] + "_" + tax_level + ".csv", index = False)
 
 
+def warn_unresolved_taxids(prefix):
+    """Loudly flag any classified taxid that the supplied taxonomy couldn't name.
+
+    An empty result is the happy path (nothing written, nothing printed). When taxids are
+    unresolved it means rankedlineage.dmp is a different vintage from the reference
+    databases, so a real organism can be silently reported as a bare number. We shout about
+    it in the log AND drop a published file so it can't be missed.
+    """
+    if not UNRESOLVED_TAXIDS:
+        return
+    ids = ", ".join(sorted(UNRESOLVED_TAXIDS, key=lambda x: (len(x), x)))
+    bar = "!" * 78
+    msg = (
+        "\n{bar}\n"
+        "!! TAXONOMY MISMATCH: {n} classified taxid(s) are missing from the taxonomy.\n"
+        "!! Unresolved taxids: {ids}\n"
+        "!! These organisms were identified but could NOT be named, so they appear in the\n"
+        "!! results as a bare number instead of a species. This means the taxonomy\n"
+        "!! (rankedlineage.dmp) does not match the reference databases. Rebuild the\n"
+        "!! taxonomy from the SAME NCBI snapshot as the BLAST/kraken2 databases.\n"
+        "{bar}\n"
+    ).format(bar=bar, n=len(UNRESOLVED_TAXIDS), ids=ids)
+    # stderr so it surfaces in .command.err / the Nextflow log even when stdout is captured
+    import sys
+    sys.stderr.write(msg)
+    print(msg)
+    with open(prefix + "_unresolved_taxids.txt", "w") as fh:
+        fh.write("Taxids that were classified but are missing from the supplied taxonomy "
+                 "(rankedlineage.dmp).\n")
+        fh.write("The taxonomy does not match the reference databases; rebuild them as a "
+                 "matched set from the same NCBI snapshot.\n\n")
+        fh.write("\n".join(sorted(UNRESOLVED_TAXIDS, key=lambda x: (len(x), x))) + "\n")
+
+
 def main(args):
 
     write_chosen_classifier(args.infile, args.prefix)
 
     for level in ["G", "S", "O", "F"]:
         get_abundance(args.prefix, args.infile, level, args.outfile)
+
+    warn_unresolved_taxids(args.prefix)
 
 if __name__=="__main__":
     args = parse_args()

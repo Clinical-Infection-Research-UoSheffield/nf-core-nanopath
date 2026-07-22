@@ -647,7 +647,7 @@ def _cluster_abundance(cid, cluster_info):
         return 0.0
 
 
-def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_ABUNDANCE):
+def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_ABUNDANCE, racon_failed=frozenset()):
     """Build the QC traffic-light section HTML from parsed cluster records."""
     neg_keys = {_species_key(s) for s in (neg_species or []) if _species_key(s)}
 
@@ -707,7 +707,26 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
         '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
         '<tbody>{0}</tbody></table>'.format("".join(body)))
 
-    return QC_CSS + '<div class="qc">' + legend + table + '</div>'
+    # clusters below the display threshold are hidden from the table above; flag that they exist
+    # (and where to find them) rather than letting them disappear silently.
+    unshown = [c for c in ordered if c not in shown]
+    footer = ""
+    if unshown:
+        largest = max((_cluster_abundance(c, cluster_info) for c in unshown), default=0.0)
+        footer = ('<p class="qc-legend">There were {0} additional cluster(s) which are not shown '
+                  'here (each below the {1:.0f}% abundance threshold). The largest was {2:.1f}% '
+                  'abundance. The full results are in the CSV file.</p>'.format(
+                      len(unshown), min_abundance, largest))
+
+    # clusters whose consensus is an unpolished draft (Racon fell back) -> lower-confidence calls
+    racon = [c for c in ordered if str(c) in racon_failed]
+    if racon:
+        footer += ('<p class="reason a"><span class="lamp"></span><b>Unpolished consensus.</b> '
+                   'Cluster(s) {0} used the raw draft &mdash; Racon found too few overlaps to polish, '
+                   'so those calls are lower-confidence; interpret with care.</p>'.format(
+                       ", ".join(_esc(str(c)) for c in racon)))
+
+    return QC_CSS + '<div class="qc">' + legend + table + footer + '</div>'
 
 
 def _map3(level):
@@ -882,13 +901,13 @@ def build_dropped_clusters_html(cluster_logs_dir, classified_ids, min_pct=SHOW_M
     return QC_CSS + '<div class="qc">' + note + table + '</div>'
 
 
-def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species=None, top_n=TOP_N_HITS, cluster_logs_dir="none"):
+def add_qc_section(reprt, hit_details_dir, chosen_classifier="none", neg_species=None, top_n=TOP_N_HITS, cluster_logs_dir="none", racon_failed=frozenset()):
     """Add the per-cluster QC traffic-light section to the report."""
     clusters = collect_cluster_records(hit_details_dir, top_n)
     if not clusters:
         return
     cluster_info = load_cluster_info(chosen_classifier)
-    html = build_qc_html(clusters, cluster_info, neg_species)
+    html = build_qc_html(clusters, cluster_info, neg_species, racon_failed=racon_failed)
     if not html:
         return
     section = reprt.add_section()
@@ -972,6 +991,10 @@ def parse_args():
         "--cluster_logs", default='none',
         help="Directory holding SPLIT_CLUSTERS '<id>.log' files (every cluster + its read count). "
              "Used to flag clusters that formed but never produced a consensus (unidentified).")
+    parser.add_argument(
+        "--racon_failed", default='',
+        help="Comma-separated cluster ids whose consensus is an unpolished draft (Racon found too "
+             "few overlaps and fell back to the raw draft). Flagged in the report.")
 
     args = parser.parse_args()
 
@@ -1108,8 +1131,9 @@ def main(args):
         # Per-cluster QC traffic lights (agreement, close hits, absolute score, neg-control
         # match) plus the Marinobacter nauticus positive-control spike check
         neg_species = list(negative['Detected Species']) if negative is not None else []
+        racon_failed = frozenset(c.strip() for c in args.racon_failed.split(",") if c.strip())
         add_qc_section(reprt, args.hit_details, args.chosen_classifier, neg_species,
-                       cluster_logs_dir=args.cluster_logs)
+                       cluster_logs_dir=args.cluster_logs, racon_failed=racon_failed)
 
         # Full machine-readable record: top hits for every classifier, all clusters
         write_hit_details_csv(
