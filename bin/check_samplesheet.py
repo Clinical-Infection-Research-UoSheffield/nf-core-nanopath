@@ -293,6 +293,26 @@ def check_samplesheet(file_in, file_out, fastq_dir=None, clinical=False):
             except AssertionError as error:
                 logger.critical("{error} On line {i}.".format(error=str(error), i=i+2))
                 sys.exit(1)
+
+        # Fail fast and LOUDLY on duplicate barcodes. A barcode multiplexes one physical sample
+        # within a run, so it must appear exactly once. Catching it here -- in the very first
+        # process of the pipeline -- stops the run in seconds with a readable message, instead of
+        # crashing hours later when that barcode's patient report is built.
+        if clinical:
+            barcodes = [r.get("sample") for r in checker.modified]
+            dupes = sorted({b for b in barcodes if b is not None and barcodes.count(b) > 1})
+            if dupes:
+                bar = "=" * 70
+                msg = ("\n{bar}\n"
+                       "ERROR IN THE SAMPLE SHEET - PLEASE REVIEW\n"
+                       "Duplicate barcode(s): {dupes}\n"
+                       "Each barcode must be listed exactly once in the sample sheet.\n"
+                       "Please correct it and re-run.\n"
+                       "{bar}").format(bar=bar, dupes=", ".join(dupes))
+                print(msg)             # -> .command.out (the "Command output" block)
+                logger.critical(msg)   # -> .command.err / Nextflow's error box
+                sys.exit(1)
+
         checker.validate_unique_samples()
     header = list(reader.fieldnames)
     if clinical:

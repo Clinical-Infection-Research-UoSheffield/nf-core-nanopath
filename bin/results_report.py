@@ -279,6 +279,19 @@ def read_patient_info(file, barcode):
                 "ERROR: barcode '{0}' not found in samplesheet '{1}'. "
                 "Barcodes present: {2}".format(
                     barcode, file, ", ".join(map(str, info['Barcode'].tolist()))))
+        # A barcode identifies one physical sample, so exactly one metadata row is expected.
+        # Accidental exact-duplicate rows (copy/paste) are collapsed; genuinely conflicting rows
+        # (same barcode, different metadata) are a data-entry error we must surface -- silently
+        # guessing which patient a barcode belongs to would be unsafe. Previously two rows made the
+        # transpose 2 columns wide and crashed with an opaque pandas "Length mismatch".
+        relevant_rows = relevant_rows.drop_duplicates()
+        if len(relevant_rows) > 1:
+            ids = ", ".join(map(str, relevant_rows.iloc[:, 0].tolist()))
+            raise SystemExit(
+                "ERROR: barcode '{0}' appears {1} times with differing metadata in samplesheet "
+                "'{2}'. A barcode must map to exactly one sample. Conflicting entries (first "
+                "column): {3}. Please fix the samplesheet so this barcode has a single row.".format(
+                    barcode, len(relevant_rows), file, ids))
         #move row names into a column
         relevant_row=relevant_rows.transpose()
         relevant_row.index.name = 'Metadata'
