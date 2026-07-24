@@ -14,6 +14,7 @@ process GET_ABUNDANCE {
     tuple val(meta), path('rel_abundance*.csv'),                  emit: results
     tuple val(meta), path('rel_abundance*_S.csv'),                emit: species_results
     tuple val(meta), path('*_chosen_classifier.csv'),            emit: chosen
+    tuple val(meta), path('*_unresolved_taxids.txt'),            emit: unresolved, optional: true
     path "versions.yml",                                          emit: versions
 
     script:

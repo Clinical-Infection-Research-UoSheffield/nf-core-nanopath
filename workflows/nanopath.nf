@@ -322,13 +322,21 @@ workflow NANOPATH {
         // flag clusters that never produced a consensus (canu/racon failures) as unidentified.
         ch_all_clusters = SPLIT_CLUSTERS.out.reads.map { meta, reads, logs, cid -> [ meta, logs ] }
 
+        // clusters where Racon fell back to the unpolished draft (too few overlaps) -> lower-quality
+        // consensus. Collect per sample (empty list if none) so the report can flag them.
+        ch_racon_failed = RACON_PASS.out.final_draft
+            .map { meta, draft, rlog, corr, cid, success -> [ meta, cid, success ] }
+            .groupTuple()
+            .map { meta, cids, oks -> [ meta, [cids, oks].transpose().findAll { it[1] == "0" }.collect { it[0] } ] }
+
         ch_reporting = GET_ABUNDANCE.out.species_results
             .map { meta, f -> [ meta.id, meta, f ] }
             .join( FASTP.out.reads.map          { meta, f -> [ meta.id, f ] }, by: 0 )
             .join( ch_hit_details.map           { meta, f -> [ meta.id, f ] }, by: 0 )
             .join( GET_ABUNDANCE.out.chosen.map { meta, f -> [ meta.id, f ] }, by: 0 )
             .join( ch_all_clusters.map          { meta, f -> [ meta.id, f ] }, by: 0 )
-            .map { id, meta, sp, reads, hit, chosen, clusters -> [ meta, sp, reads, hit, chosen, clusters ] }
+            .join( ch_racon_failed.map          { meta, f -> [ meta.id, f ] }, by: 0 )
+            .map { id, meta, sp, reads, hit, chosen, clusters, racon -> [ meta, sp, reads, hit, chosen, clusters, racon ] }
 
         // folder / file names of the databases used, for display in the report's Run parameters.
         // blast_db points at a db PREFIX inside its folder, so take the parent folder's name.

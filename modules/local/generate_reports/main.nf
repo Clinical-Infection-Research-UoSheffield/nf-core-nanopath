@@ -8,7 +8,7 @@ process GENERATE_REPORTS {
         'docker.io/mbdabrowska1/generate-reports:1.0' }"
 
     input:
-    tuple val(meta), path(sample_result), path(fastp_results), path(hit_details), path(chosen_classifier), path(cluster_logs)
+    tuple val(meta), path(sample_result), path(fastp_results), path(hit_details), path(chosen_classifier), path(cluster_logs), val(racon_failed)
     val(positive_control)
     val(negative_control)
     tuple val(kit), val(run_id), val(seq_start)
@@ -53,6 +53,7 @@ process GENERATE_REPORTS {
         --hit_details . \
         --chosen_classifier ${chosen_classifier} \
         --cluster_logs . \
+        --racon_failed "${racon_failed.join(',')}" \
         --blast_db_name "${blast_db_name}" \
         --kraken2_db_name "${kraken2_db_name}" \
         --seqmatch_db_name "${seqmatch_db_name}" \
