@@ -14,6 +14,7 @@ logger = logging.getLogger()
 # the taxonomy (rankedlineage.dmp) doesn't match the reference databases. Collected and reported loudly.
 UNRESOLVED_TAXIDS = set()
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -22,6 +23,7 @@ def parse_args():
     parser.add_argument("--outfile", help="Output file name.", type=str, default="rel_abundance")
 
     return parser.parse_args()
+
 
 def get_taxname(tax_id, tax_level):
     # Offline-safe. Taxonomy names come from the local dmp (see get_taxname_from_dmp). This
@@ -36,14 +38,14 @@ def get_taxname(tax_id, tax_level):
 
 
 def get_taxname_from_dmp(data, tax_id, tax_level):
-    tags = {"S": "species","G": "genus","F": "family", "O": "order"}
+    tags = {"S": "species", "G": "genus", "F": "family", "O": "order"}
     tax_level_tag = tags[tax_level]
 
     if str(tax_id) == "nan":
-        return 'unclassified'
-    match = data.loc[data['taxid'] == tax_id]
+        return "unclassified"
+    match = data.loc[data["taxid"] == tax_id]
     if match.empty:
-        return 'unclassified'   # taxid not in the classification table (e.g. root/unresolved)
+        return "unclassified"  # taxid not in the classification table (e.g. root/unresolved)
     name = match[tax_level_tag].iloc[0]
     if not isinstance(name, str):
         name = match["name"].iloc[0] if "name" in match.columns else None
@@ -57,57 +59,77 @@ def get_taxname_from_dmp(data, tax_id, tax_level):
     return str(tax_id)
 
 
-def get_abundance_values(names,paths):
+def get_abundance_values(names, paths):
     dfs = []
-    for name,path in zip(names,paths):
-        data1 = pd.read_csv(path, index_col=False, sep=';').iloc[:,1:]
+    for name, path in zip(names, paths):
+        data1 = pd.read_csv(path, index_col=False, sep=";").iloc[:, 1:]
 
-        total = sum(data1['reads_in_cluster'])
-        rel_abundance=[]
+        total = sum(data1["reads_in_cluster"])
+        rel_abundance = []
 
-        data=choose_classification(data1)
+        data = choose_classification(data1)
 
-        for index,row in data.iterrows():
-            rel_abundance.append(row['reads_in_cluster'] / total * 100)
-            
-        data['rel_abundance'] = rel_abundance
-        dfs.append(pd.DataFrame({'taxid': data['taxid'], 'rel_abundance': rel_abundance, 'reads': data['reads_in_cluster']}))
+        for index, row in data.iterrows():
+            rel_abundance.append(row["reads_in_cluster"] / total * 100)
+
+        data["rel_abundance"] = rel_abundance
+        dfs.append(
+            pd.DataFrame({"taxid": data["taxid"], "rel_abundance": rel_abundance, "reads": data["reads_in_cluster"]})
+        )
         data.to_csv("" + name + "_nanoclust_out.txt")
 
     return dfs, data
 
+
 def choose_classification(dataframe):
     print(dataframe)
-    if len(dataframe.columns)>13:
-        chosen_frame=[]
-        classification_score={}
+    if len(dataframe.columns) > 13:
+        chosen_frame = []
+        classification_score = {}
         for index, row in dataframe.iterrows():
-            print(row['class_level'])
-            if row['class_level']=="S":
+            print(row["class_level"])
+            if row["class_level"] == "S":
                 chosen_frame.append(row.iloc[:12].tolist())
             else:
-                classification_score["kraken2"]=sum(row.notna()[8:12])
-                classification_score["blast"]=sum(row.notna()[24:])
-                classification_score["seqmatch"]=sum(row.notna()[16:20])
-                choice=max(classification_score, key=classification_score.get)
-                
+                classification_score["kraken2"] = sum(row.notna()[8:12])
+                classification_score["blast"] = sum(row.notna()[24:])
+                classification_score["seqmatch"] = sum(row.notna()[16:20])
+                choice = max(classification_score, key=classification_score.get)
+
                 if choice == "kraken2":
                     chosen_frame.append(row.iloc[:12].tolist())
                 elif choice == "seqmatch":
-                    chosen_frame.append(row.iloc[np.r_[0:4,13:20]].tolist())
+                    chosen_frame.append(row.iloc[np.r_[0:4, 13:20]].tolist())
                 else:
-                    chosen_frame.append(row.iloc[np.r_[0:4,20:28]].tolist())
-            
+                    chosen_frame.append(row.iloc[np.r_[0:4, 20:28]].tolist())
+
         logger.info("Choosing classification")
         logger.debug(chosen_frame)
 
-        chosen_df=pd.DataFrame(chosen_frame, columns=['reads_in_cluster', 'used_for_consensus', 'reads_after_corr', 'draft_id', 'classifier_name', 'taxid', 'stat', 'name', 'species', 'genus', 'family', 'order'])
+        chosen_df = pd.DataFrame(
+            chosen_frame,
+            columns=[
+                "reads_in_cluster",
+                "used_for_consensus",
+                "reads_after_corr",
+                "draft_id",
+                "classifier_name",
+                "taxid",
+                "stat",
+                "name",
+                "species",
+                "genus",
+                "family",
+                "order",
+            ],
+        )
         logger.debug(len(chosen_df))
         logger.debug(chosen_df)
 
         return chosen_df
     else:
         return dataframe
+
 
 def choose_row_classifier(row):
     """Return which classifier won for a single cluster row of the full-mode table.
@@ -136,7 +158,7 @@ def write_chosen_classifier(infile, prefix):
     single-classifier modes the file is written with a header only (the report then falls
     back to the sole classifier present for each cluster).
     """
-    raw = pd.read_csv(infile, index_col=False, sep=';')
+    raw = pd.read_csv(infile, index_col=False, sep=";")
     rows = []
     # id column + >13 classifier columns == full mode (matches choose_classification)
     full = raw.shape[1] > 14
@@ -147,18 +169,21 @@ def write_chosen_classifier(infile, prefix):
         data1 = raw.iloc[:, 1:]
         for i, (_, row) in enumerate(data1.iterrows()):
             reads = int(reads_col.iloc[i])
-            rows.append({
-                "cluster": ids.iloc[i],
-                "classifier": choose_row_classifier(row) if full else "",
-                "reads": reads,
-                "rel_abundance": round(reads / total * 100, 1),
-            })
+            rows.append(
+                {
+                    "cluster": ids.iloc[i],
+                    "classifier": choose_row_classifier(row) if full else "",
+                    "reads": reads,
+                    "rel_abundance": round(reads / total * 100, 1),
+                }
+            )
     pd.DataFrame(rows, columns=["cluster", "classifier", "reads", "rel_abundance"]).to_csv(
-        prefix + "_chosen_classifier.csv", index=False)
+        prefix + "_chosen_classifier.csv", index=False
+    )
 
 
 def merge_abundance(dfs, data, tax_level):
-    df_final = reduce(lambda left, right: pd.merge(left, right, on='taxid', how='outer').fillna(0), dfs)
+    df_final = reduce(lambda left, right: pd.merge(left, right, on="taxid", how="outer").fillna(0), dfs)
     all_tax = []
 
     for index, row in df_final.iterrows():
@@ -173,7 +198,7 @@ def merge_abundance(dfs, data, tax_level):
             if tax_level == "S" and row["taxid"] in [1280, 985002, 1654388]:
                 all_tax.append("Staphylococcus aureus complex")
             else:
-                all_tax.append("unclassified")   # offline: never contact the taxonomy API
+                all_tax.append("unclassified")  # offline: never contact the taxonomy API
 
     df_final["taxid"] = all_tax
 
@@ -183,20 +208,19 @@ def merge_abundance(dfs, data, tax_level):
 
     # Group by taxid and sum the abundance values
     df_final_grp = df_final.groupby(["taxid"], as_index=False).sum()
-    df_final_sorted = df_final_grp.sort_values(by='rel_abundance', ascending=False)
+    df_final_sorted = df_final_grp.sort_values(by="rel_abundance", ascending=False)
 
     return df_final_sorted
 
 
-
-def get_abundance(names,paths,tax_level, outfile):
-    if(not isinstance(paths, list)):
+def get_abundance(names, paths, tax_level, outfile):
+    if not isinstance(paths, list):
         paths = [paths]
         names = [names]
 
-    dfs, data = get_abundance_values(names,paths)
+    dfs, data = get_abundance_values(names, paths)
     df_final_grp = merge_abundance(dfs, data, tax_level)
-    df_final_grp.to_csv(outfile + "_"+ names[0] + "_" + tax_level + ".csv", index = False)
+    df_final_grp.to_csv(outfile + "_" + names[0] + "_" + tax_level + ".csv", index=False)
 
 
 def warn_unresolved_taxids(prefix):
@@ -223,13 +247,15 @@ def warn_unresolved_taxids(prefix):
     ).format(bar=bar, n=len(UNRESOLVED_TAXIDS), ids=ids)
     # stderr so it surfaces in .command.err / the Nextflow log even when stdout is captured
     import sys
+
     sys.stderr.write(msg)
     print(msg)
     with open(prefix + "_unresolved_taxids.txt", "w") as fh:
-        fh.write("Taxids that were classified but are missing from the supplied taxonomy "
-                 "(rankedlineage.dmp).\n")
-        fh.write("The taxonomy does not match the reference databases; rebuild them as a "
-                 "matched set from the same NCBI snapshot.\n\n")
+        fh.write("Taxids that were classified but are missing from the supplied taxonomy " "(rankedlineage.dmp).\n")
+        fh.write(
+            "The taxonomy does not match the reference databases; rebuild them as a "
+            "matched set from the same NCBI snapshot.\n\n"
+        )
         fh.write("\n".join(sorted(UNRESOLVED_TAXIDS, key=lambda x: (len(x), x))) + "\n")
 
 
@@ -242,7 +268,8 @@ def main(args):
 
     warn_unresolved_taxids(args.prefix)
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     args = parse_args()
 
     main(args)

@@ -14,6 +14,7 @@ has 3 elements, new values have 2 elements". This asserts the new behaviour:
 Needs pandas (./venv/bin/python tests/patient_info_dedup.py). read_excel is stubbed so
 no Excel engine (openpyxl) is required.
 """
+
 import sys, os, types, importlib.util
 
 for name in ("aplanat", "aplanat.report", "bokeh", "bokeh.resources", "requests"):
@@ -25,11 +26,16 @@ import pandas as pd
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(REPO_ROOT, "bin")
 spec = importlib.util.spec_from_file_location("results_report", os.path.join(BIN, "results_report.py"))
-rr = importlib.util.module_from_spec(spec); spec.loader.exec_module(rr)
+rr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rr)
 
 COLS = ["Specimen Number", "Barcode", "Status", "Name"] + ["c%d" % i for i in range(7)]
+
+
 def as_df(rows):
     return pd.DataFrame(rows, columns=COLS)
+
+
 # feed a DataFrame straight in as "file"; stub read_excel to mimic the real usecols=range(0,11)
 rr.pd.read_excel = lambda f, usecols=None, **kw: (f.iloc[:, usecols] if usecols is not None else f)
 

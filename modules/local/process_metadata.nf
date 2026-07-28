@@ -21,7 +21,7 @@ process PROCESS_METADATA {
         kit=\$(grep '"Expansion kit", "value":' ${report} | grep -o -P 'Expansion.{0,35}' | cut -d '"' -f5)
     else
         kit=\$(grep '"Kit type", "value":' ${report} | grep -o -P 'Kit.{0,35}' | cut -d '"' -f5)
-        
+
     fi
     run_id=\$(grep "protocol_run_id=" ${summary} | cut -d "=" -f2)
     seq_start=\$(grep 'started=' ${summary} | cut -d "=" -f2 | cut -d "." -f1 | sed 's/-/\\//g' | sed 's/T/ /g' | awk 'BEGIN{FS=OFS=" "} {split(\$1, a, /\\//); \$1 = a[3] "/" a[2] "/" a[1]} 1')

@@ -300,7 +300,7 @@ workflow NANOPATH {
     GET_ABUNDANCE (
         JOIN_RESULTS.out.classification
     )
-    
+
     if(!params.onGridion){
         Channel.from(params.kit, 'unknown').set{ch_barcoding_kit}
     }

@@ -32,7 +32,7 @@ process FULL_CLASSIFICATION {
     echo "classifying with kraken2"
     kraken2 --db ${kraken2_db_dir} --report ${prefix}_${cluster_id}_kraken2_consensus_classification.csv --output ${prefix}_${cluster_id}_kraken2_classification_out.tsv ${consensus}
     KR_OUT=\$(sed 's/\t/;/g' ${prefix}_${cluster_id}_kraken2_consensus_classification.csv | tr -s ' ' | sed 's/; /;/g' | cut -d ';' -f3,4,5,6 | grep -v '^0' | awk 'BEGIN {FS=";"; OFS=";"} {print \$4, \$3, \$2}')
-    
+
     echo "classifying with seqmatch"
     SequenceMatch seqmatch -k 5 ${seqmatch_db_file} ${consensus} | cut -f2,4 | sort | join -t \$'\t' -1 1 -2 1 -o 2.3,2.5,1.2 - ${seqmatch_accession_file} | sort -k3 -n -r -t '\t' | sed 's/\t/;/g' > ${prefix}_${cluster_id}_seqmatch_consensus_classification.csv
     if [ -s ${prefix}_${cluster_id}_seqmatch_consensus_classification.csv ]; then

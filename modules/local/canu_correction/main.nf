@@ -42,7 +42,7 @@ process CANU_CORRECTION {
         echo "Canu read correction has failed and the sample will be discontinued"
         exit 84
     fi
-    
+
     READ_COUNT=\$(( \$(awk '{print \$1/2}' <(wc -l ${prefix}_cluster${cluster_id}.correctedReads.fasta)) ))
     cat $cluster_log > ${prefix}_cluster${cluster_id}_racon.log
     echo -n ";${count};\$READ_COUNT;" >> ${prefix}_cluster${cluster_id}_racon.log && cp ${prefix}_cluster${cluster_id}_racon.log ${prefix}_cluster${cluster_id}_racon_.log

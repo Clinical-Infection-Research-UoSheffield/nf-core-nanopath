@@ -19,7 +19,7 @@ process SAMPLESHEET_CHECK {
     when:
     task.ext.when == null || task.ext.when
 
-    script: 
+    script:
     // Set fastqDir to fastq_dir path provided or leave as empty string
     def fastqDir = params.fastq_dir ? "--fastq_dir ${fastq_dir}" : ""
     def clinical = params.clinical ? "--clinical" : ""

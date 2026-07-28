@@ -1,9 +1,12 @@
 name: nf-core CI
-# This workflow runs the pipeline with the minimal test dataset to check that it completes without any syntax errors
+# A full pipeline run needs Nanopore reads plus BLAST/kraken/seqmatch reference DBs that
+# can't live in GitHub Actions, so this workflow does a lightweight check instead: it
+# confirms the Nextflow config + parameter schema parse, and runs the Python unit tests
+# that cover the report and samplesheet logic.
 on:
   push:
     branches:
-      - dev
+      - main
   pull_request:
   release:
     types: [published]
@@ -17,15 +20,16 @@ concurrency:
 
 jobs:
   test:
-    name: Run pipeline with test data
-    # Only run on push if this is the nf-core dev branch (merged PRs)
-    if: "${{ github.event_name != 'push' || (github.event_name == 'push' && github.repository == 'nf-core/nanopath') }}"
+    name: Parse config & run unit tests
+    if: "${{ github.event_name != 'push' || (github.event_name == 'push' && github.repository == 'Clinical-Infection-Research-UoSheffield/nf-core-nanopath') }}"
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # Pinned to a version using the legacy config parser -- the one the pipeline and
+        # the EPI2ME instrument actually run. Newer Nextflow's strict parser rejects the
+        # nf-core check_max() helper in nextflow.config.
         NXF_VER:
           - "22.10.1"
-          - "latest-everything"
     steps:
       - name: Check out pipeline code
         uses: actions/checkout@v3
@@ -35,9 +39,26 @@ jobs:
         with:
           version: "${{ matrix.NXF_VER }}"
 
-      - name: Run pipeline with test data
-        # TODO nf-core: You can customise CI pipeline run tests as required
-        # For example: adding multiple test runs with different parameters
-        # Remember that you can parallelise this by using strategy.matrix
+      - name: Check the Nextflow config resolves (no pipeline run)
+        run: nextflow config ${GITHUB_WORKSPACE} -profile test,docker > /dev/null
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Validate the parameter schema is valid JSON
+        run: python -c "import json; json.load(open('nextflow_schema.json'))"
+
+      - name: Install Python deps and byte-compile bin/ scripts
         run: |
-          nextflow run ${GITHUB_WORKSPACE} -profile test,docker --outdir ./results
+          python -m pip install --upgrade pip
+          pip install pandas
+          python -m py_compile bin/*.py
+
+      - name: Run Python unit tests (report + samplesheet logic)
+        run: |
+          python tests/qc_footers.py
+          python tests/patient_info_dedup.py
+          python tests/dup_barcode_check.py
+          python tests/smoke_hit_details.py

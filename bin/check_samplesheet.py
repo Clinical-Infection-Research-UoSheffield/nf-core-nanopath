@@ -1,6 +1,5 @@
 """Provide a command line tool to validate and transform tabular samplesheets."""
 
-
 import argparse
 import csv
 import logging
@@ -24,20 +23,9 @@ class RowChecker:
 
     """
 
-    VALID_FORMATS = (
-        ".fq.gz",
-        ".fastq.gz",
-        ".fq",
-        ".fastq"
-    )
+    VALID_FORMATS = (".fq.gz", ".fastq.gz", ".fq", ".fastq")
 
-    def __init__(
-        self, 
-        required_columns,
-        fastq_dir=None,
-        clinical=False,
-        single_col="single_end",
-        **kwargs):
+    def __init__(self, required_columns, fastq_dir=None, clinical=False, single_col="single_end", **kwargs):
         """
         Initialize the row checker with the expected required columns.
 
@@ -106,8 +94,10 @@ class RowChecker:
     def _validate_fastq_format(self, filename):
         """Assert that a given filename has one of the expected FASTQ extensions."""
         print(filename.suffixes)
-        assert any("".join(filename.suffixes) == extension for extension in self.VALID_FORMATS), (
-            "The FASTQ file: {file} has an unrecognized extension: {suffix}\n It should be one of: {valid_format}".format(file=filename , valid_format=", ".join(self.VALID_FORMATS), suffix="".join(filename.suffixes))
+        assert any(
+            "".join(filename.suffixes) == extension for extension in self.VALID_FORMATS
+        ), "The FASTQ file: {file} has an unrecognized extension: {suffix}\n It should be one of: {valid_format}".format(
+            file=filename, valid_format=", ".join(self.VALID_FORMATS), suffix="".join(filename.suffixes)
         )
 
     def _validate_pair(self, row):
@@ -124,13 +114,17 @@ class RowChecker:
         """Change barcode column name to sample."""
         if self.clinical:
             row["sample"] = row.pop("barcode")
-            #change row["sample"] to lowercase
+            # change row["sample"] to lowercase
             row["sample"] = row["sample"].lower()
 
     def _check_barcode_format(self, row):
         pattern = r"^barcode([0-9][0-9]|100)$"
         if not re.match(pattern, row["sample"]):
-                raise ValueError("Invalid barcode format for sample {row}. Expected format: barcode01-barcode09 or barcode10-barcode100.".format(row=row['sample']))
+            raise ValueError(
+                "Invalid barcode format for sample {row}. Expected format: barcode01-barcode09 or barcode10-barcode100.".format(
+                    row=row["sample"]
+                )
+            )
         return True
 
     def _create_fastq_path(self, row):
@@ -138,11 +132,11 @@ class RowChecker:
         print(row["status"])
         if not self.fastq_dir:
             return None
-        
+
         fastq_dir = Path(self.fastq_dir)
         if not fastq_dir.is_dir():
             raise FileNotFoundError("The FASTQ directory does not exist: {fastq_dir}".format(fastq_dir=fastq_dir))
-        
+
         if self.clinical:
             print(row["sample"])
             print(row["status"])
@@ -151,22 +145,30 @@ class RowChecker:
                 return None
         else:
             filename = row["filename"]
-        
+
         pattern = "{filename}.*".format(filename=filename)
         matching_files = list(fastq_dir.glob(pattern))
-        
+
         if len(matching_files) == 0:
-            warnings.warn("No matching FASTQ file found in the directory: {fastq_dir} for file: {filename}".format(fastq_dir=fastq_dir, filename=filename))
+            warnings.warn(
+                "No matching FASTQ file found in the directory: {fastq_dir} for file: {filename}".format(
+                    fastq_dir=fastq_dir, filename=filename
+                )
+            )
             row["status"] = "discontinued"
             return None
         elif len(matching_files) > 1:
-            raise FileNotFoundError("Multiple matching FASTQ files found in the directory: {fastq_dir} for file: {filename}".format(fastq_dir=fastq_dir, filename=filename))
-        
+            raise FileNotFoundError(
+                "Multiple matching FASTQ files found in the directory: {fastq_dir} for file: {filename}".format(
+                    fastq_dir=fastq_dir, filename=filename
+                )
+            )
+
         fastq_file = matching_files[0]
 
         row["fastq_1"] = fastq_file
         self._validate_fastq_format(row["fastq_1"])
-        
+
         return row
 
     def validate_unique_samples(self):
@@ -278,7 +280,9 @@ def check_samplesheet(file_in, file_out, fastq_dir=None, clinical=False):
         # Validate the existence of the expected header columns.
         if not required_columns.issubset(reader.fieldnames):
             req_cols = ", ".join(required_columns)
-            logger.critical("The sample sheet **must** contain these column headers: {req_cols}.".format(req_cols=req_cols))
+            logger.critical(
+                "The sample sheet **must** contain these column headers: {req_cols}.".format(req_cols=req_cols)
+            )
             sys.exit(1)
 
         # Validate each row.
@@ -291,7 +295,7 @@ def check_samplesheet(file_in, file_out, fastq_dir=None, clinical=False):
                 print(row)
                 checker.validate_and_transform(row)
             except AssertionError as error:
-                logger.critical("{error} On line {i}.".format(error=str(error), i=i+2))
+                logger.critical("{error} On line {i}.".format(error=str(error), i=i + 2))
                 sys.exit(1)
 
         # Fail fast and LOUDLY on duplicate barcodes. A barcode multiplexes one physical sample
@@ -303,14 +307,16 @@ def check_samplesheet(file_in, file_out, fastq_dir=None, clinical=False):
             dupes = sorted({b for b in barcodes if b is not None and barcodes.count(b) > 1})
             if dupes:
                 bar = "=" * 70
-                msg = ("\n{bar}\n"
-                       "ERROR IN THE SAMPLE SHEET - PLEASE REVIEW\n"
-                       "Duplicate barcode(s): {dupes}\n"
-                       "Each barcode must be listed exactly once in the sample sheet.\n"
-                       "Please correct it and re-run.\n"
-                       "{bar}").format(bar=bar, dupes=", ".join(dupes))
-                print(msg)             # -> .command.out (the "Command output" block)
-                logger.critical(msg)   # -> .command.err / Nextflow's error box
+                msg = (
+                    "\n{bar}\n"
+                    "ERROR IN THE SAMPLE SHEET - PLEASE REVIEW\n"
+                    "Duplicate barcode(s): {dupes}\n"
+                    "Each barcode must be listed exactly once in the sample sheet.\n"
+                    "Please correct it and re-run.\n"
+                    "{bar}"
+                ).format(bar=bar, dupes=", ".join(dupes))
+                print(msg)  # -> .command.out (the "Command output" block)
+                logger.critical(msg)  # -> .command.err / Nextflow's error box
                 sys.exit(1)
 
         checker.validate_unique_samples()
@@ -318,9 +324,9 @@ def check_samplesheet(file_in, file_out, fastq_dir=None, clinical=False):
     if clinical:
         header[header.index("barcode")] = "sample"
         header.append("fastq_1")
-    
+
     header = ["sample", "fastq_1"] + [col for col in header if col not in ["sample", "fastq_1"]]
-    
+
     header.insert(1, "single_end")
     header = [element.replace(" ", "_") for element in header]
     # See https://docs.python.org/3.9/library/csv.html#id3 to read up on `newline=""`.
@@ -328,7 +334,7 @@ def check_samplesheet(file_in, file_out, fastq_dir=None, clinical=False):
         writer = csv.DictWriter(out_handle, header, delimiter=",")
         writer.writeheader()
         for row in checker.modified:
-            new_row = {key.replace(' ', '_'): value for key, value in row.items()}
+            new_row = {key.replace(" ", "_"): value for key, value in row.items()}
             writer.writerow(new_row)
 
 
@@ -376,7 +382,9 @@ def convert_excel_to_csv(excel_file, clinical=False):
         # Validate file format
         excel_formats = pd.ExcelFile(excel_file).sheet_names
         if not excel_formats:
-            logger.error("The input file does not contain any Excel sheets but the file has an xlsx extension. Check the file isn't corrupted.")
+            logger.error(
+                "The input file does not contain any Excel sheets but the file has an xlsx extension. Check the file isn't corrupted."
+            )
             sys.exit(1)
 
         # Perform conversion
@@ -385,7 +393,7 @@ def convert_excel_to_csv(excel_file, clinical=False):
 
         if clinical:
             df = df.iloc[:, :14]
-            df_cleaned = df.dropna(how='all')
+            df_cleaned = df.dropna(how="all")
 
         csv_file = excel_file.with_suffix(".csv")
         df_cleaned.to_csv(csv_file, index=False)
@@ -411,7 +419,7 @@ def main():
         csv_file = convert_excel_to_csv(args.file_in, args.clinical)
         args.file_in = csv_file
 
-    print(args.clinical)   
+    print(args.clinical)
     check_samplesheet(args.file_in, args.file_out, args.fastq_dir, args.clinical)
 
 

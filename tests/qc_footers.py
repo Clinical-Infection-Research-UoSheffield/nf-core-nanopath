@@ -11,6 +11,7 @@ imports (same trick as smoke_hit_details.py) and call it directly.
 
 Exits non-zero (via assert) on the first failing check.
 """
+
 import sys, os, types, importlib.util
 
 for name in ("aplanat", "aplanat.report", "bokeh", "bokeh.resources", "requests", "pandas", "numpy"):
@@ -21,7 +22,8 @@ sys.modules["aplanat"].report = sys.modules["aplanat.report"]
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(REPO_ROOT, "bin")
 spec = importlib.util.spec_from_file_location("results_report", os.path.join(BIN, "results_report.py"))
-rr = importlib.util.module_from_spec(spec); spec.loader.exec_module(rr)
+rr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rr)
 
 
 def krak(species):
@@ -30,11 +32,10 @@ def krak(species):
 
 
 # cluster 0 = big (shown);  cluster 1 = tiny (below the 5% threshold -> unshown)
-clusters = {"0": {"kraken2": [krak("Streptococcus mitis")]},
-            "1": {"kraken2": [krak("Escherichia coli")]}}
+clusters = {"0": {"kraken2": [krak("Streptococcus mitis")]}, "1": {"kraken2": [krak("Escherichia coli")]}}
 cluster_info = {
     "0": {"reads": 900, "rel_abundance": 90.0, "classifier": "kraken2"},
-    "1": {"reads": 30,  "rel_abundance": 3.0,  "classifier": "kraken2"},
+    "1": {"reads": 30, "rel_abundance": 3.0, "classifier": "kraken2"},
 }
 
 # ---- 1) unshown footer appears and names the count + largest hidden abundance -----------
@@ -47,10 +48,7 @@ assert "Escherichia coli" not in html, "below-threshold cluster must not be show
 print("OK  unshown-clusters footer: counts hidden clusters + largest abundance, hides the row")
 
 # ---- 2) no unshown footer when everything clears the threshold --------------------------
-html_all = rr.build_qc_html(
-    {"0": clusters["0"]},
-    {"0": cluster_info["0"]},
-    neg_species=[])
+html_all = rr.build_qc_html({"0": clusters["0"]}, {"0": cluster_info["0"]}, neg_species=[])
 assert "additional cluster(s) which are not shown" not in html_all, "no hidden clusters -> no note"
 print("OK  unshown-clusters footer absent when nothing is hidden")
 

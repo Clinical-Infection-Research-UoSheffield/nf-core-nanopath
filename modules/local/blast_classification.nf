@@ -21,7 +21,7 @@ process BLAST_CLASSIFICATION {
 
     """
     export BLASTDB=\$(dirname ${blast_db})
-    blastn -query $consensus -db \$(basename ${blast_db}) -task megablast -dust no -outfmt '10 sscinames staxids evalue length pident bitscore' -evalue 11 -max_hsps 50 -max_target_seqs 100 | 
+    blastn -query $consensus -db \$(basename ${blast_db}) -task megablast -dust no -outfmt '10 sscinames staxids evalue length pident bitscore' -evalue 11 -max_hsps 50 -max_target_seqs 100 |
     sort -t ',' -k5nr -k6nr |
     awk 'NR<=5' |
     sed 's/,/;/g' > ${prefix}_${cluster_id}_blastn_consensus_classification.csv
@@ -32,7 +32,7 @@ process BLAST_CLASSIFICATION {
         echo "unclassified;0;0" >> ${prefix}_${cluster_id}_blastn_consensus_classification.csv
     fi
     BLAST_OUT=\$(cut -d";" -f1,2,5 ${prefix}_${cluster_id}_blastn_consensus_classification.csv | head -n1)
-    
+
     cat $cluster_log > ${prefix}_${cluster_id}_classification.log
     echo -n ";" >> ${prefix}_${cluster_id}_classification.log
     echo \$BLAST_OUT >> ${prefix}_${cluster_id}_classification.log
