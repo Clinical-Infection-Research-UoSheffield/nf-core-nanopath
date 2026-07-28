@@ -1,11 +1,9 @@
 #!/usr/bin/env nextflow
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    nf-core/nanopath
+    Clinical-Infection-Research-UoSheffield/nf-core-nanopath
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Github : https://github.com/nf-core/nanopath
-    Website: https://nf-co.re/nanopath
-    Slack  : https://nfcore.slack.com/channels/nanopath
+    Github : https://github.com/Clinical-Infection-Research-UoSheffield/nf-core-nanopath
 ----------------------------------------------------------------------------------------
 */
 
