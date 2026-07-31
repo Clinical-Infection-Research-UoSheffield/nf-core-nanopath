@@ -368,6 +368,29 @@ def process_controls(ctrl):
     return control
 
 
+def negative_control_reads(ctrl):
+    """Total reads detected in the negative control, across ALL species (full file, not top 3).
+
+    The whole-run negative-control check is deliberately simple: any reads at all mean the control
+    is not clean, so the sample report must be read alongside the negative-control report. We do not
+    try to match individual species or reason about which control to use when a control has no
+    consensus -- presence of reads is enough to flag. Returns 0 when there is no negative control or
+    it produced nothing.
+    """
+    ctrl = ctrl[1:-1]
+    if ctrl in ("", "None") or not os.path.isfile(ctrl):
+        return 0
+    try:
+        df = pd.read_csv(ctrl)
+    except Exception:
+        logger.exception("Failed to read negative control reads from %s", ctrl)
+        return 0
+    if df.shape[1] < 3:
+        return 0
+    # column 2 holds the read count (get_abundance writes taxid/name, rel_abundance, reads)
+    return int(pd.to_numeric(df.iloc[:, 2], errors="coerce").fillna(0).sum())
+
+
 def write_hit_details_csv(hit_details_dir, outpath, chosen_classifier="none", top_n=TOP_N_HITS):
     """Write a consolidated hit-details CSV covering every cluster and classifier.
 
@@ -563,8 +586,12 @@ def _pretty_species(key):
     return parts[0].capitalize() + ((" " + " ".join(parts[1:])) if len(parts) > 1 else "")
 
 
-def assess_cluster(recs, winner_token, neg_keys):
-    """Return the four per-cluster QC light levels + the called species."""
+def assess_cluster(recs, winner_token):
+    """Return the per-cluster QC light levels + the called species.
+
+    Negative-control contamination is no longer a per-cluster light: it is assessed once for the
+    whole run in the Controls section (any bacterial reads in the negative control -> flagged).
+    """
     blast, seq, krak = recs.get("blast", []), recs.get("seqmatch", []), recs.get("kraken2", [])
 
     # 1. Consensus call + agreement, decided at species level. A genus-only top call
@@ -615,11 +642,7 @@ def assess_cluster(recs, winner_token, neg_keys):
             v = _qc_num(s1["s_ab_score"])
             score = "green" if v >= QC_SEQMATCH_SCORE_GREEN else "amber" if v >= QC_SEQMATCH_SCORE_AMBER else "red"
 
-    # 4. matches negative control (simple: called species seen in neg control)
-    ck = "" if call_species == "Uncertain" else _species_key(call_species)
-    negctrl = "red" if ck and ck in neg_keys else "green"
-
-    # 5. classifier failure: any classifier that ran but returned no usable taxon (unclassified
+    # 4. classifier failure: any classifier that ran but returned no usable taxon (unclassified
     #    or missing) is a FAILURE. It must never be silently dropped or counted as agreement, and
     #    it always forces red -- a silent failure is the dangerous kind. (A genus-only call, e.g.
     #    kraken2's LCA, still names a taxon: that's an abstention, not a failure.)
@@ -635,7 +658,6 @@ def assess_cluster(recs, winner_token, neg_keys):
         "agreement": agreement,
         "close": close,
         "score": score,
-        "negctrl": negctrl,
         "call_species": call_species,
         "failed": failed,
     }
@@ -690,6 +712,32 @@ def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Traffic-light colours reused by the Controls section (negative / internal control status lines)
+DOT_RED = "#dc2626"
+DOT_GREEN = "#16a34a"
+
+
+def _dot(color):
+    """A small coloured status dot for the Controls section."""
+    return (
+        '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;'
+        'background:{0};vertical-align:middle;margin-right:8px"></span>'.format(color)
+    )
+
+
+def _labelled_name(prefix, status, specimen, ext):
+    """Build an output filename that carries the sample's samplesheet status.
+
+    e.g. prefix='patient_report', status='negative control', specimen='S123'
+         -> 'patient_report_negative_control_S123.html'. The status is omitted when unknown, so
+    behaviour is unchanged for samples with no status. Labelling controls this way lets an operator
+    find the negative / positive control outputs for a run at a glance.
+    """
+    tag = re.sub(r"[^A-Za-z0-9]+", "_", str(status or "")).strip("_").lower()
+    parts = [prefix] + ([tag] if tag else []) + [str(specimen)]
+    return "_".join(parts) + ext
+
+
 def _cluster_sort_key(cid):
     return (0, int(cid)) if str(cid).isdigit() else (1, str(cid))
 
@@ -708,9 +756,8 @@ def _cluster_abundance(cid, cluster_info):
         return 0.0
 
 
-def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_ABUNDANCE, racon_failed=frozenset()):
+def build_qc_html(clusters, cluster_info, min_abundance=SHOW_MIN_ABUNDANCE, racon_failed=frozenset()):
     """Build the QC traffic-light section HTML from parsed cluster records."""
-    neg_keys = {_species_key(s) for s in (neg_species or []) if _species_key(s)}
 
     # most abundant first, keeping only clusters at or above the minimum abundance
     ordered = sorted(clusters, key=lambda c: -_cluster_reads(c, cluster_info))
@@ -723,8 +770,8 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
         recs = clusters[cid]
         info = cluster_info.get(str(cid), {})
         winner_token = _WIN_TOKEN.get(info.get("classifier", ""))
-        a = assess_cluster(recs, winner_token, neg_keys)
-        lights = {k: a[k] for k in ("agreement", "close", "score", "negctrl")}
+        a = assess_cluster(recs, winner_token)
+        lights = {k: a[k] for k in ("agreement", "close", "score")}
         flagged = any(v != "green" for v in lights.values())
         anchor = "qc-{0}".format(cid)
         reads, pct = info.get("reads", ""), info.get("rel_abundance", "")
@@ -742,14 +789,13 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
 
         body.append(
             "<tr><td>{cid}</td><td>{sp}</td>"
-            '<td class="c">{reads}</td>{ag}{cl}{sc}{ng}</tr>'.format(
+            '<td class="c">{reads}</td>{ag}{cl}{sc}</tr>'.format(
                 cid=_esc(cid),
                 sp=sp_html,
                 reads=reads_txt,
                 ag=cell(lights["agreement"]),
                 cl=cell(lights["close"]),
                 sc=cell(lights["score"]),
-                ng=cell(lights["negctrl"]),
             )
         )
 
@@ -772,7 +818,7 @@ def build_qc_html(clusters, cluster_info, neg_species, min_abundance=SHOW_MIN_AB
         "<table>"
         '<thead><tr><th>Cluster</th><th>Call</th><th class="c">Reads (%)</th>'
         '<th class="c">Agreement</th><th class="c">Close hits</th>'
-        '<th class="c">Abs. score</th><th class="c">Neg. control</th></tr></thead>'
+        '<th class="c">Abs. score</th></tr></thead>'
         "<tbody>{0}</tbody></table>".format("".join(body))
     )
 
@@ -835,14 +881,6 @@ def _build_detail(cid, anchor, recs, a, lights):
         reasons.append((lights["score"], "<b>Low absolute score.</b>" + detail))
     if lights["close"] != "green":
         reasons.append((lights["close"], "<b>Close top hits.</b> Runner-up is within the near-tie margin."))
-    if lights["negctrl"] != "green":
-        reasons.append(
-            (
-                lights["negctrl"],
-                "<b>Also in the negative control.</b> <i>{0}</i> appears in the neg-control "
-                "results &mdash; possible contamination.".format(_esc(a["call_species"])),
-            )
-        )
 
     reason_html = "".join(
         '<p class="reason {0}"><span class="lamp"></span>{1}</p>'.format(_map3(lvl), txt) for lvl, txt in reasons
@@ -900,8 +938,11 @@ def build_qc_explanations():
         "<b>green</b> at least 99%, <b>amber</b> 98&ndash;99%, <b>red</b> below 98%. "
         "SeqMatch S_ab: <b>green</b> at least 0.95, <b>amber</b> 0.90&ndash;0.95, <b>red</b> below 0.90.</p>"
         "<h4>Negative control</h4>"
-        "<p>Is the called species also detected in the negative control for this run? "
-        "<b>Red</b> if it is &mdash; likely reagent or environmental contamination rather than a true finding.</p>"
+        "<p>Assessed once for the whole run (see the Run QC section), not per cluster. "
+        "<b>Red</b> if there were <i>any</i> reads in the negative control for this run &mdash; a "
+        "clean negative control should be empty, so any reads indicate possible reagent or "
+        "environmental contamination. This report should then be read alongside the negative "
+        "control report.</p>"
         "<h4>How each classifier scores</h4>"
         "<p><b>BLAST</b> &mdash; % identity of the best alignment to the 16S database "
         "(higher is better; a confident species match is usually at least 99%). "
@@ -994,7 +1035,6 @@ def add_qc_section(
     reprt,
     hit_details_dir,
     chosen_classifier="none",
-    neg_species=None,
     top_n=TOP_N_HITS,
     cluster_logs_dir="none",
     racon_failed=frozenset(),
@@ -1004,7 +1044,7 @@ def add_qc_section(
     if not clusters:
         return
     cluster_info = load_cluster_info(chosen_classifier)
-    html = build_qc_html(clusters, cluster_info, neg_species, racon_failed=racon_failed)
+    html = build_qc_html(clusters, cluster_info, racon_failed=racon_failed)
     if not html:
         return
     section = reprt.add_section()
@@ -1023,6 +1063,12 @@ def parse_args():
     parser.add_argument("--infile", default="unknown", help="Table file with classification and abundance results")
     parser.add_argument("--output", default="unknown", help="Report output file name")
     parser.add_argument("--barcode", default="discontinued", help="barcode identifier for the patient sample")
+    parser.add_argument(
+        "--status",
+        default="",
+        help="sample status from the samplesheet (e.g. 'sample', 'negative control', "
+        "'positive control'); used to label the output filenames so controls are easy to find",
+    )
     parser.add_argument("--info", required=True, help="Experiment information file mapping patient ID with a barcode")
     parser.add_argument("--revision", default="unknown", help="git branch/tag of the executed workflow")
     parser.add_argument("--commit", default="unknown", help="git commit of the executed workflow")
@@ -1137,7 +1183,7 @@ def main(args):
             <font color="red">**{0} rRNA NOT detected**</font>
             """.format(assay_info))
 
-            reprt.write("patient_report_" + str(patient.iloc[1, 1]) + ".html")
+            reprt.write(_labelled_name("patient_report", args.status, patient.iloc[1, 1], ".html"))
     else:
         metadata_table = read_patient_info(args.info, args.barcode)
         restructured = []
@@ -1157,7 +1203,6 @@ def main(args):
             results_table = read_abundance_results(args.infile)
 
         positive = process_controls(args.positive)
-        negative = process_controls(args.negative)
 
         reprt = report.UoSReport(
             title=title,
@@ -1206,22 +1251,22 @@ def main(args):
             <font color="red">**{0} rRNA NOT detected**</font>
             """.format(assay_info))
 
-        # Per-cluster QC traffic lights (agreement, close hits, absolute score, neg-control
-        # match) plus the Marinobacter nauticus positive-control spike check
-        neg_species = list(negative["Detected Species"]) if negative is not None else []
+        # Per-cluster QC traffic lights (agreement, close hits, absolute score). The negative
+        # control is assessed once for the whole run in the Run QC section below, not per cluster.
         racon_failed = frozenset(c.strip() for c in args.racon_failed.split(",") if c.strip())
         add_qc_section(
             reprt,
             args.hit_details,
             args.chosen_classifier,
-            neg_species,
             cluster_logs_dir=args.cluster_logs,
             racon_failed=racon_failed,
         )
 
         # Full machine-readable record: top hits for every classifier, all clusters
         write_hit_details_csv(
-            args.hit_details, "hit_details_" + str(metadata_table.iloc[1, 1]) + ".csv", args.chosen_classifier
+            args.hit_details,
+            _labelled_name("hit_details", args.status, metadata_table.iloc[1, 1], ".csv"),
+            args.chosen_classifier,
         )
 
         section = reprt.add_section()
@@ -1232,18 +1277,19 @@ def main(args):
 
         **NEGATIVE CONTROL**
         """)
+        # Whole-run negative-control check: any reads in the negative control -> red, and the sample
+        # report must be read alongside the negative-control report. We deliberately do NOT list the
+        # neg-control species here (that lives in the negative control's own report).
         comment = 0
-        if negative is not None:
+        neg_reads = negative_control_reads(args.negative)
+        if neg_reads > 0:
             comment += 10
-            section.markdown("""
-            Total reads in negative control: {0} 
-            """.format(negative["Number of Reads"].sum()))
-
-            section.markdown(_plain_table(negative, classes="larger-first-column"))
+            section.markdown(
+                "{0}There were **{1}** reads in the negative control. This report should be read "
+                "in conjunction with the negative control report.".format(_dot(DOT_RED), neg_reads)
+            )
         else:
-            section.markdown("""
-            No species detected in negative control.
-            """)
+            section.markdown("{0}No reads detected in the negative control.".format(_dot(DOT_GREEN)))
 
         section.markdown("""
         <br/>
@@ -1341,7 +1387,7 @@ def main(args):
         )
 
         # write report
-        reprt.write(args.output + "_" + str(metadata_table.iloc[1, 1]) + ".html")
+        reprt.write(_labelled_name(args.output, args.status, metadata_table.iloc[1, 1], ".html"))
 
 
 if __name__ == "__main__":

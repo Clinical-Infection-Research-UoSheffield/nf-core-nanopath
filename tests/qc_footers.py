@@ -39,7 +39,7 @@ cluster_info = {
 }
 
 # ---- 1) unshown footer appears and names the count + largest hidden abundance -----------
-html = rr.build_qc_html(clusters, cluster_info, neg_species=[])
+html = rr.build_qc_html(clusters, cluster_info)
 assert "additional cluster(s) which are not shown" in html, "unshown-clusters note missing"
 assert "The largest was 3.0%" in html, "unshown note should report the largest hidden abundance"
 assert "1</td>" in html or ">1<" in html or "There were 1 " in html, "should count the 1 hidden cluster"
@@ -48,12 +48,12 @@ assert "Escherichia coli" not in html, "below-threshold cluster must not be show
 print("OK  unshown-clusters footer: counts hidden clusters + largest abundance, hides the row")
 
 # ---- 2) no unshown footer when everything clears the threshold --------------------------
-html_all = rr.build_qc_html({"0": clusters["0"]}, {"0": cluster_info["0"]}, neg_species=[])
+html_all = rr.build_qc_html({"0": clusters["0"]}, {"0": cluster_info["0"]})
 assert "additional cluster(s) which are not shown" not in html_all, "no hidden clusters -> no note"
 print("OK  unshown-clusters footer absent when nothing is hidden")
 
 # ---- 3) Racon footer appears only for the flagged cluster -------------------------------
-html_racon = rr.build_qc_html(clusters, cluster_info, neg_species=[], racon_failed=frozenset({"0"}))
+html_racon = rr.build_qc_html(clusters, cluster_info, racon_failed=frozenset({"0"}))
 assert "Unpolished consensus" in html_racon, "racon-failed footer missing"
 assert "Cluster(s) 0" in html_racon, "racon footer should name the affected cluster"
 print("OK  Racon footer present and names the affected cluster")

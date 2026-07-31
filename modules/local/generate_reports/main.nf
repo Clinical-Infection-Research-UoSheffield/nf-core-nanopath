@@ -22,6 +22,12 @@ process GENERATE_REPORTS {
 
     script:
     def revision = workflow.revision ?: workflow.manifest.version ?: 'unknown'
+    // Prefer the sequencing run's protocol_run_id (from PROCESS_METADATA); when it's unavailable
+    // (e.g. the run summary wasn't found, as on an offline instrument) fall back to Nextflow's
+    // run name so every barcode of one execution still shares an identifier for linking a sample
+    // to its negative control.
+    def run_identifier = (run_id && "${run_id}" != 'unknown') ? run_id : workflow.runName
+    def sample_status = meta.status ?: 'sample'
     def clustering_size=params.umap_set_size
     def report_template="$projectDir/assets/UoS_report_template.html"
     def logo="$projectDir/assets/UoS_white_logo.txt"
@@ -38,6 +44,7 @@ process GENERATE_REPORTS {
         --infile ${sample_result} \
         --output patient_report \
         --barcode ${meta.id} \
+        --status "${sample_status}" \
         --info ${samplesheet} \
         --demux 'Guppy 6.4.6' \
         --clustering_size ${clustering_size} \
@@ -47,7 +54,7 @@ process GENERATE_REPORTS {
         --kit "${kit}" \
         --report_template ${report_template} \
         --logo ${logo} \
-        --run_id "${run_id}" \
+        --run_id "${run_identifier}" \
         --seq_start "${seq_start}" \
         --revision "${revision}" \
         --hit_details . \
