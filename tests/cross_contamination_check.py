@@ -99,4 +99,27 @@ rows = open(out).read().splitlines()
 assert rows[0].startswith("kind\t") and any(r.startswith("neg_vs_sample\t") for r in rows[1:]), rows
 print("OK  main() writes a TSV and prints a human summary")
 
+# ---- scenario 4: the --medaka-dir loader against a published-output tree -----------------------
+root = tempfile.mkdtemp(prefix="medaka_pass_")
+
+
+def write_consensus(barcode, cluster, s):
+    d = os.path.join(root, "{0}_{1}_consensus_medaka".format(barcode, cluster))
+    os.makedirs(d)
+    with open(os.path.join(d, "consensus.fasta"), "w") as fh:
+        fh.write(">{0}_{1}\n{2}\n".format(barcode, cluster, s))
+
+
+write_consensus("barcode01", "0", ecoli)  # sample
+write_consensus("barcode03", "0", kleb)  # sample
+write_consensus("barcode02", "0", mutate(ecoli, 4))  # negative control, shares E. coli
+recs4 = ccc.load_from_medaka_dir(root, ["barcode02"], [])
+assert {(r["barcode"], r["status"]) for r in recs4} >= {
+    ("barcode02", "negative control"),
+    ("barcode01", "sample"),
+}, recs4
+neg_hits4, _ = ccc.find_matches(recs4, min_identity=0.99)
+assert len(neg_hits4) == 1 and neg_hits4[0][0]["barcode"] == "barcode02", neg_hits4
+print("OK  --medaka-dir loader labels controls from barcode and flags the match")
+
 print("\nALL CROSS-CONTAMINATION CHECKS PASSED")

@@ -30,13 +30,20 @@ contamination. Report the identity so a human can judge (100% is stronger than 9
 """
 
 import argparse
+import glob
+import os
 import sys
 
+# edlib gives fast, exact edit-distance identity. If it isn't installed we fall back to the stdlib
+# difflib ratio -- approximate, but it needs no install, which makes ad-hoc testing painless.
 try:
     import edlib
-except ImportError:  # pragma: no cover - environment guard
-    sys.stderr.write("ERROR: this check needs the 'edlib' package (pip install edlib).\n")
-    raise
+
+    _HAVE_EDLIB = True
+except ImportError:
+    import difflib
+
+    _HAVE_EDLIB = False
 
 SAMPLE = "sample"
 NEG = "negative control"
@@ -83,20 +90,62 @@ def load_records(path):
     return recs
 
 
-def identity(a, b):
-    """Nucleotide identity in [0,1] via edlib infix ('HW') alignment of the shorter into the longer.
+def load_from_medaka_dir(medaka_dir, negatives, positives):
+    """Build records directly from a run's published medaka output -- no combined FASTA needed.
 
-    Infix alignment tolerates length differences (a partial consensus embedded in a longer one still
-    matches over its length), which is the realistic contamination case.
+    Globs '<dir>/**/<barcode>_<cluster>_consensus_medaka/consensus.fasta' (as published to
+    <outdir>/medaka_pass/). Barcode and cluster come from the directory name; status is set from
+    the --negative / --positive barcode lists, everything else is a sample. This is the one-command
+    way to test the check on an existing run.
     """
-    q, t = (a, b) if len(a) <= len(b) else (b, a)
-    if not q:
+    negs = {b.strip() for b in negatives if b and b.strip()}
+    poss = {b.strip() for b in positives if b and b.strip()}
+    recs, seen = [], set()
+    pattern = os.path.join(medaka_dir, "**", "*_consensus_medaka", "consensus.fasta")
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        dirname = os.path.basename(os.path.dirname(path))
+        stem = dirname[: -len("_consensus_medaka")] if dirname.endswith("_consensus_medaka") else dirname
+        barcode, _, cluster = stem.rpartition("_")
+        barcode = barcode or stem
+        status = NEG if barcode in negs else POS if barcode in poss else SAMPLE
+        seq = "".join(s for _, s in parse_fasta(path))  # concatenate any records in the file
+        if not seq:
+            continue
+        recs.append(
+            {
+                "barcode": barcode,
+                "status": status,
+                "cluster": cluster or "?",
+                "species": "",
+                "seq": seq.upper(),
+                "name": "{0} {1} (cluster {2})".format(barcode, status, cluster or "?"),
+            }
+        )
+    return recs
+
+
+def identity(a, b):
+    """Nucleotide identity in [0,1].
+
+    With edlib: infix ('HW') alignment of the shorter into the longer, so a partial consensus
+    embedded in a longer one still matches over its length (the realistic contamination case).
+    Without edlib: the stdlib difflib ratio, an approximation that is fine for a handful of
+    near-identical consensus sequences.
+    """
+    if not a or not b:
         return 0.0
-    res = edlib.align(q, t, mode="HW", task="distance")
-    dist = res["editDistance"]
-    if dist is None or dist < 0:
-        return 0.0
-    return max(0.0, 1.0 - dist / len(q))
+    if _HAVE_EDLIB:
+        q, t = (a, b) if len(a) <= len(b) else (b, a)
+        res = edlib.align(q, t, mode="HW", task="distance")
+        dist = res["editDistance"]
+        if dist is None or dist < 0:
+            return 0.0
+        return max(0.0, 1.0 - dist / len(q))
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
 
 
 def find_matches(recs, min_identity):
@@ -165,8 +214,17 @@ def summarise(neg_hits, sample_hits, n_neg, n_sample):
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--fasta", help="combined FASTA of all consensus, headers 'barcode|status|cluster|species'")
+    src.add_argument(
+        "--medaka-dir",
+        help="a run's medaka output dir (e.g. <outdir>/medaka_pass); consensus are found and labelled automatically",
+    )
     p.add_argument(
-        "--fasta", required=True, help="combined FASTA of all consensus, headers 'barcode|status|cluster|species'"
+        "--negative", default="", help="comma-separated barcode(s) that are negative controls (with --medaka-dir)"
+    )
+    p.add_argument(
+        "--positive", default="", help="comma-separated barcode(s) that are positive controls (with --medaka-dir)"
     )
     p.add_argument("--min-identity", type=float, default=0.99, help="identity threshold to flag a match [0.99]")
     p.add_argument("--out", default="cross_contamination.tsv", help="output TSV of flagged pairs")
@@ -174,7 +232,12 @@ def parse_args():
 
 
 def main(args):
-    recs = load_records(args.fasta)
+    if not _HAVE_EDLIB:
+        sys.stderr.write("NOTE: edlib not installed; using the stdlib difflib approximation.\n")
+    if getattr(args, "medaka_dir", None):
+        recs = load_from_medaka_dir(args.medaka_dir, args.negative.split(","), args.positive.split(","))
+    else:
+        recs = load_records(args.fasta)
     n_neg = sum(1 for r in recs if r["status"] == NEG)
     n_sample = sum(1 for r in recs if r["status"] == SAMPLE)
     neg_hits, sample_hits = find_matches(recs, args.min_identity)
