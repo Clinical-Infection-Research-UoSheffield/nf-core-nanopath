@@ -355,6 +355,26 @@ workflow NANOPATH {
             ch_input,
             ch_db_names
         )
+
+        // Fail loud: at the end, name every samplesheet barcode that produced NO report. This
+        // catches all drop-out points in one place (0 reads after FASTP, the one-read clustering
+        // skip, failed consensus/classification) so a run that analysed nothing can't look like a
+        // clean success -- previously these vanished with only scattered mid-run warnings.
+        INPUT_CHECK.out.reads
+            .map { meta, reads -> [ meta.id, meta.id ] }
+            .join( GENERATE_REPORTS.out.report.map { meta, html -> [ meta.id, true ] }, by: 0, remainder: true )
+            .filter { id, idv, reported -> reported == null }
+            .map    { id, idv, reported -> id }
+            .collect()
+            .subscribe { missing ->
+                if( missing ) {
+                    log.warn "\n" + ("=" * 74) +
+                        "\n  ${missing.size()} barcode(s) had no viable 16S reads for analysis and produced NO report:" +
+                        "\n      ${missing.join(', ')}" +
+                        "\n  (present in the samplesheet, but too few/no reads passed QC and clustering)" +
+                        "\n" + ("=" * 74)
+                }
+            }
     }
 
     CUSTOM_DUMPSOFTWAREVERSIONS (

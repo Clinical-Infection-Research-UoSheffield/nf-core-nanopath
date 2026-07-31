@@ -98,6 +98,14 @@
             "description": "Parameters used to describe centralised config profiles. These should not be edited.",
             "help_text": "The centralised nf-core configuration profiles use a handful of pipeline parameters to describe themselves. This information is then printed to the Nextflow log when you run a pipeline. You should not need to change these values when you run a pipeline.",
             "properties": {
+                "load_nfcore_configs": {
+                    "type": "boolean",
+                    "description": "Load nf-core institutional configs from the internet at startup.",
+                    "default": false,
+                    "hidden": true,
+                    "help_text": "Off by default. Loading these fetches from raw.githubusercontent.com at config-parse time, which hangs for 10-15 minutes on an offline instrument before timing out. Enable only on an online host that needs the institutional profiles.",
+                    "fa_icon": "fas fa-users-cog"
+                },
                 "custom_config_version": {
                     "type": "string",
                     "description": "Git commit id for Institutional configs.",
