@@ -16,26 +16,37 @@ Input: one combined FASTA whose headers encode the source, pipe-separated:
        cluster : cluster id within that barcode
        species : optional, for nicer reporting (may be empty/omitted)
 
-For every negative-control sequence we find its most similar *sample* sequence (nucleotide identity
-via edlib infix alignment) and flag pairs at or above --min-identity. We also report sample<->sample
-near-identical pairs (possible cross-contamination / index hopping) as a secondary signal.
+Sequences are compared all-vs-all with minimap2, which reports identity over the *aligned overlap*
+plus the overlap length. A negative-control consensus is flagged against its best sample match when
+identity >= --min-identity AND the overlap is at least --min-overlap bp. Measuring identity over the
+overlap (not the whole sequence) means two consensus that cover different, only-partially-overlapping
+stretches of 16S are still compared fairly; the minimum-overlap rule stops a short, highly-conserved
+stretch (16S has very conserved regions) from raising a false flag. sample<->sample near-identical
+pairs are reported as a secondary "possible carryover" signal.
 
 Caveat worth remembering: 16S is highly conserved, so different strains of one species are often
 >99% identical. A flag therefore means "the same organism/sequence is in the negative control and a
 sample" -- exactly what we want to surface -- but it cannot by itself prove the direction of
 contamination. Report the identity so a human can judge (100% is stronger than 99%).
 
-    consensus_cross_contamination.py --fasta all_consensus.fasta --min-identity 0.99 \
-        --out cross_contamination.tsv
+    consensus_cross_contamination.py --medaka-dir <outdir>/medaka_pass --negative barcode02 \
+        --min-identity 0.99 --min-overlap 300 --out cross_contamination.tsv
 """
 
 import argparse
 import glob
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 
-# edlib gives fast, exact edit-distance identity. If it isn't installed we fall back to the stdlib
-# difflib ratio -- approximate, but it needs no install, which makes ad-hoc testing painless.
+# Preferred engine: minimap2 all-vs-all. It reports identity over the *aligned region* plus the
+# alignment length, so two consensus that cover different, only-partially-overlapping stretches of
+# 16S are compared over their overlap (not penalised for the non-overlapping ends), and we can
+# require a minimum overlap length. If minimap2 isn't on PATH we fall back to a built-in edit-
+# distance identity (edlib, or stdlib difflib) -- fast and install-free, but it measures identity
+# over the whole shorter sequence, so it can miss offset/partial overlaps. See docs/cross_contamination.md.
 try:
     import edlib
 
@@ -44,6 +55,11 @@ except ImportError:
     import difflib
 
     _HAVE_EDLIB = False
+
+
+def _have_minimap2():
+    return shutil.which("minimap2") is not None
+
 
 SAMPLE = "sample"
 NEG = "negative control"
@@ -128,13 +144,13 @@ def load_from_medaka_dir(medaka_dir, negatives, positives):
     return recs
 
 
-def identity(a, b):
-    """Nucleotide identity in [0,1].
+def identity_builtin(a, b):
+    """Fallback nucleotide identity in [0,1] when minimap2 is unavailable.
 
     With edlib: infix ('HW') alignment of the shorter into the longer, so a partial consensus
-    embedded in a longer one still matches over its length (the realistic contamination case).
-    Without edlib: the stdlib difflib ratio, an approximation that is fine for a handful of
-    near-identical consensus sequences.
+    embedded in a longer one still matches over its length. Without edlib: the stdlib difflib ratio.
+    Both measure identity over the whole shorter sequence, so offset/partial overlaps score low --
+    that is the known limitation minimap2 fixes.
     """
     if not a or not b:
         return 0.0
@@ -148,49 +164,107 @@ def identity(a, b):
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
 
 
-def find_matches(recs, min_identity):
-    """Return flagged (a, b, identity) pairs: every negative-control seq vs its best sample seq,
-    plus sample<->sample near-identical pairs. Only pairs at/above min_identity are returned."""
-    neg = [r for r in recs if r["status"] == NEG]
-    sample = [r for r in recs if r["status"] == SAMPLE]
+def _run_minimap2(recs, preset):
+    """Run minimap2 all-vs-all on the pooled consensus; return PAF lines. Sequences are written with
+    numeric names (index into recs) so the PAF maps straight back."""
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False)
+    try:
+        for i, r in enumerate(recs):
+            tmp.write(">{0}\n{1}\n".format(i, r["seq"]))
+        tmp.close()
+        # -c base-level alignment (so identity is exact), -X skip self/dual mappings (all-vs-all)
+        cmd = ["minimap2", "-c", "-X", "-x", preset, tmp.name, tmp.name]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        if proc.returncode != 0:
+            raise RuntimeError("minimap2 failed:\n" + proc.stderr[-800:])
+        return proc.stdout.splitlines()
+    finally:
+        os.unlink(tmp.name)
 
-    neg_hits = []
-    for n in neg:
-        best, best_id = None, 0.0
-        for s in sample:
-            pid = identity(n["seq"], s["seq"])
-            if pid > best_id:
-                best, best_id = s, pid
-        if best is not None and best_id >= min_identity:
-            neg_hits.append((n, best, best_id))
 
+def parse_paf(lines):
+    """Yield (query_index, target_index, identity, overlap_len) from PAF lines.
+
+    PAF col 10 = matching bases, col 11 = alignment block length (matches+mismatches+indels).
+    identity = col10/col11 (identity over the aligned region); overlap length = col11.
+    """
+    for ln in lines:
+        f = ln.rstrip("\n").split("\t")
+        if len(f) < 12:
+            continue
+        try:
+            q, t = int(f[0]), int(f[5])
+            matches, block = int(f[9]), int(f[10])
+        except ValueError:
+            continue
+        if block <= 0:
+            continue
+        yield q, t, matches / block, block
+
+
+def compute_pairs(recs, min_identity, min_overlap, paf_lines=None, preset="ava-ont"):
+    """Best (identity, overlap) for each cross-barcode pair meeting BOTH thresholds.
+
+    Uses minimap2 (given paf_lines, or by running it when on PATH); otherwise the built-in
+    edit-distance fallback. Returns {(i, j): (identity, overlap)} with i < j.
+    """
+    best = {}
+
+    def consider(i, j, ident, ov):
+        if i == j or recs[i]["barcode"] == recs[j]["barcode"]:
+            return  # self, or same barcode (different clusters of one sample) -> not contamination
+        if ident < min_identity or ov < min_overlap:
+            return
+        key = (min(i, j), max(i, j))
+        if key not in best or ident > best[key][0]:
+            best[key] = (ident, ov)
+
+    if paf_lines is not None or _have_minimap2():
+        if paf_lines is None:
+            paf_lines = _run_minimap2(recs, preset)
+        for q, t, ident, ov in parse_paf(paf_lines):
+            consider(q, t, ident, ov)
+    else:
+        for i in range(len(recs)):
+            for j in range(i + 1, len(recs)):
+                ov = min(len(recs[i]["seq"]), len(recs[j]["seq"]))
+                consider(i, j, identity_builtin(recs[i]["seq"], recs[j]["seq"]), ov)
+    return best
+
+
+def find_matches(recs, min_identity, min_overlap=300, paf_lines=None, preset="ava-ont"):
+    """Flagged pairs as (rec_a, rec_b, identity, overlap): every negative-control consensus vs its
+    best sample match, plus sample<->sample near-identical pairs. Thresholds: identity AND overlap."""
+    best = compute_pairs(recs, min_identity, min_overlap, paf_lines, preset)
+    neg_best = {}  # neg index -> (sample_rec, identity, overlap)
     sample_hits = []
-    for i in range(len(sample)):
-        for j in range(i + 1, len(sample)):
-            if sample[i]["barcode"] == sample[j]["barcode"]:
-                continue  # same barcode, different cluster -> expected, not cross-contamination
-            pid = identity(sample[i]["seq"], sample[j]["seq"])
-            if pid >= min_identity:
-                sample_hits.append((sample[i], sample[j], pid))
-
+    for (i, j), (ident, ov) in best.items():
+        a, b = recs[i], recs[j]
+        if a["status"] == NEG and b["status"] == SAMPLE:
+            ni, srec = i, b
+        elif b["status"] == NEG and a["status"] == SAMPLE:
+            ni, srec = j, a
+        elif a["status"] == SAMPLE and b["status"] == SAMPLE:
+            sample_hits.append((a, b, ident, ov))
+            continue
+        else:
+            continue
+        if ni not in neg_best or ident > neg_best[ni][1]:
+            neg_best[ni] = (srec, ident, ov)
+    neg_hits = [(recs[ni], srec, ident, ov) for ni, (srec, ident, ov) in neg_best.items()]
     return neg_hits, sample_hits
 
 
 def write_tsv(path, neg_hits, sample_hits):
     with open(path, "w") as fh:
-        fh.write("kind\tidentity\tsource_a\tspecies_a\tsource_b\tspecies_b\n")
-        for a, b, pid in neg_hits:
-            fh.write(
-                "neg_vs_sample\t{0:.4f}\t{1}\t{2}\t{3}\t{4}\n".format(
-                    pid, a["name"], a["species"], b["name"], b["species"]
+        fh.write("kind\tidentity\toverlap_bp\tsource_a\tspecies_a\tsource_b\tspecies_b\n")
+        for kind, hits in (("neg_vs_sample", neg_hits), ("sample_vs_sample", sample_hits)):
+            for a, b, pid, ov in hits:
+                fh.write(
+                    "{0}\t{1:.4f}\t{2}\t{3}\t{4}\t{5}\t{6}\n".format(
+                        kind, pid, ov, a["name"], a["species"], b["name"], b["species"]
+                    )
                 )
-            )
-        for a, b, pid in sample_hits:
-            fh.write(
-                "sample_vs_sample\t{0:.4f}\t{1}\t{2}\t{3}\t{4}\n".format(
-                    pid, a["name"], a["species"], b["name"], b["species"]
-                )
-            )
 
 
 def summarise(neg_hits, sample_hits, n_neg, n_sample):
@@ -201,14 +275,16 @@ def summarise(neg_hits, sample_hits, n_neg, n_sample):
         lines.append(
             "CONTAMINATION SIGNAL: {0} negative-control consensus/consensuses match a sample:".format(len(neg_hits))
         )
-        for a, b, pid in sorted(neg_hits, key=lambda x: -x[2]):
-            lines.append("  - {0} is {1:.1f}% identical to {2}".format(a["name"], pid * 100, b["name"]))
+        for a, b, pid, ov in sorted(neg_hits, key=lambda x: -x[2]):
+            lines.append(
+                "  - {0} is {1:.1f}% identical to {2} (over {3} bp)".format(a["name"], pid * 100, b["name"], ov)
+            )
     elif n_neg:
         lines.append("No negative-control consensus matched any sample above threshold. Clean.")
     if sample_hits:
         lines.append("Also: {0} near-identical sample<->sample pair(s) (possible carryover):".format(len(sample_hits)))
-        for a, b, pid in sorted(sample_hits, key=lambda x: -x[2]):
-            lines.append("  - {0} <-> {1} : {2:.1f}%".format(a["name"], b["name"], pid * 100))
+        for a, b, pid, ov in sorted(sample_hits, key=lambda x: -x[2]):
+            lines.append("  - {0} <-> {1} : {2:.1f}% (over {3} bp)".format(a["name"], b["name"], pid * 100, ov))
     return "\n".join(lines)
 
 
@@ -226,21 +302,32 @@ def parse_args():
     p.add_argument(
         "--positive", default="", help="comma-separated barcode(s) that are positive controls (with --medaka-dir)"
     )
-    p.add_argument("--min-identity", type=float, default=0.99, help="identity threshold to flag a match [0.99]")
+    p.add_argument("--min-identity", type=float, default=0.99, help="identity over the overlap to flag a match [0.99]")
+    p.add_argument("--min-overlap", type=int, default=300, help="minimum aligned overlap in bp to flag a match [300]")
+    p.add_argument("--preset", default="ava-ont", help="minimap2 preset for the all-vs-all alignment [ava-ont]")
     p.add_argument("--out", default="cross_contamination.tsv", help="output TSV of flagged pairs")
     return p.parse_args()
 
 
 def main(args):
-    if not _HAVE_EDLIB:
-        sys.stderr.write("NOTE: edlib not installed; using the stdlib difflib approximation.\n")
+    if _have_minimap2():
+        sys.stderr.write(
+            "Using minimap2 (identity over the aligned overlap; min overlap {0} bp).\n".format(args.min_overlap)
+        )
+    else:
+        sys.stderr.write(
+            "NOTE: minimap2 not found; using the built-in {0} fallback, which measures identity over "
+            "the whole shorter sequence and may miss offset/partial overlaps.\n".format(
+                "edlib" if _HAVE_EDLIB else "difflib"
+            )
+        )
     if getattr(args, "medaka_dir", None):
         recs = load_from_medaka_dir(args.medaka_dir, args.negative.split(","), args.positive.split(","))
     else:
         recs = load_records(args.fasta)
     n_neg = sum(1 for r in recs if r["status"] == NEG)
     n_sample = sum(1 for r in recs if r["status"] == SAMPLE)
-    neg_hits, sample_hits = find_matches(recs, args.min_identity)
+    neg_hits, sample_hits = find_matches(recs, args.min_identity, args.min_overlap, preset=args.preset)
     write_tsv(args.out, neg_hits, sample_hits)
     print(summarise(neg_hits, sample_hits, n_neg, n_sample))
     return neg_hits

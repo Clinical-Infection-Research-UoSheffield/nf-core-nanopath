@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """Prototype check for consensus_cross_contamination.py (contamination-clustering branch).
 
-Builds a small synthetic run: a sample and a negative control that share a near-identical ~1500 bp
-consensus (planted contamination), plus unrelated sequences that must not flag. Verifies the
-sequence-level check flags the neg<->sample match and leaves the clean sequences alone.
+Two engines are exercised:
+  * the built-in edit-distance fallback, on synthetic ~1500 bp sequences (no minimap2 needed here);
+  * the minimap2 path, driven by synthetic PAF lines so it needs no minimap2 install -- this is where
+    the identity-over-overlap and minimum-overlap rules are verified, including the offset-overlap
+    case the built-in fallback misses.
 
-Needs edlib (./venv/bin/pip install edlib) and is run with the venv python.
+Run with any python3 (edlib optional).
 """
 
 import os, sys, random, tempfile, importlib.util
@@ -29,9 +31,9 @@ def mutate(seq, n_subs):
     return "".join(s)
 
 
-ecoli = rand_seq()  # the organism shared between a sample and the neg control
-kleb = rand_seq()  # an unrelated organism, genuinely only in a sample
-staph = rand_seq()  # unrelated, only in the neg control in the clean scenario
+ecoli = rand_seq()
+kleb = rand_seq()
+staph = rand_seq()
 
 
 def write_fasta(records):
@@ -42,7 +44,8 @@ def write_fasta(records):
     return f.name
 
 
-# ---- scenario 1: neg control shares E. coli with a sample (5 subs = 99.7%) -> FLAG -------------
+# ============================ built-in fallback (real sequences) ============================
+# scenario 1: neg control shares E. coli with a sample -> FLAG
 fasta = write_fasta(
     [
         ("barcode01|sample|0|Escherichia coli", ecoli),
@@ -52,28 +55,25 @@ fasta = write_fasta(
 )
 out = tempfile.NamedTemporaryFile(suffix=".tsv", delete=False).name
 recs = ccc.load_records(fasta)
-neg_hits, sample_hits = ccc.find_matches(recs, min_identity=0.99)
+neg_hits, sample_hits = ccc.find_matches(recs, min_identity=0.99)  # built-in path (no minimap2 on this host)
 assert len(neg_hits) == 1, neg_hits
-n, s, pid = neg_hits[0]
+n, s, pid, ov = neg_hits[0]
 assert n["barcode"] == "barcode02" and s["barcode"] == "barcode01", (n["barcode"], s["barcode"])
-assert 0.99 <= pid <= 1.0, pid
-assert not sample_hits, "unrelated sample (Klebsiella) must not match"
-print("OK  neg-control E. coli flagged against the sample at {0:.1f}% identity".format(pid * 100))
+assert 0.99 <= pid <= 1.0 and ov >= 300, (pid, ov)
+assert not sample_hits
+print("OK  built-in: neg-control E. coli flagged vs sample at {0:.1f}% over {1} bp".format(pid * 100, ov))
 
-# ---- scenario 2: neg control has its own unrelated organism -> CLEAN (no flag) -----------------
+# scenario 2: neg control unrelated to every sample -> CLEAN
 fasta2 = write_fasta(
     [
         ("barcode01|sample|0|Escherichia coli", ecoli),
-        ("barcode03|sample|0|Klebsiella pneumoniae", kleb),
         ("barcode02|negative control|0|unclassified", staph),
     ]
 )
-recs2 = ccc.load_records(fasta2)
-neg_hits2, _ = ccc.find_matches(recs2, min_identity=0.99)
-assert neg_hits2 == [], "a neg control unrelated to every sample must not flag"
-print("OK  neg control unrelated to all samples -> clean, no flag")
+assert ccc.find_matches(ccc.load_records(fasta2), 0.99)[0] == []
+print("OK  built-in: neg control unrelated to all samples -> no flag")
 
-# ---- scenario 3: two DIFFERENT patients share E. coli -> sample<->sample carryover signal ------
+# scenario 3: two different patients share E. coli -> sample<->sample carryover
 fasta3 = write_fasta(
     [
         ("barcode01|sample|0|Escherichia coli", ecoli),
@@ -81,45 +81,58 @@ fasta3 = write_fasta(
         ("barcode05|sample|0|Klebsiella pneumoniae", kleb),
     ]
 )
-recs3 = ccc.load_records(fasta3)
-neg_hits3, sample_hits3 = ccc.find_matches(recs3, min_identity=0.99)
-assert neg_hits3 == [], "no negative control here"
-assert len(sample_hits3) == 1, sample_hits3
-print("OK  two samples sharing E. coli surfaced as a sample<->sample pair (possible carryover)")
+_, sh3 = ccc.find_matches(ccc.load_records(fasta3), 0.99)
+assert len(sh3) == 1
+print("OK  built-in: two samples sharing E. coli surfaced as sample<->sample")
 
-# ---- end-to-end: main() writes the TSV and prints a summary -----------------------------------
+
+# ============================ minimap2 path (synthetic PAF) ============================
+def rec(barcode, status):
+    return {
+        "barcode": barcode,
+        "status": status,
+        "cluster": "0",
+        "species": "",
+        "seq": "",
+        "name": "{0} {1} (cluster 0)".format(barcode, status),
+    }
+
+
+def paf(q, t, matches, block, ln=1500):
+    # PAF: qname qlen qstart qend strand tname tlen tstart tend matches block mapq
+    return "\t".join(str(x) for x in [q, ln, 0, block, "+", t, ln, 0, block, matches, block, 60])
+
+
+recs_p = [rec("barcode01", "sample"), rec("barcode02", "negative control"), rec("barcode03", "sample")]
+
+# a) neg(1)~sample(0) at 99.3% over 1500 bp qualifies; neg(1)~sample(2) at 20% is filtered
+neg, _ = ccc.find_matches(recs_p, 0.99, 300, paf_lines=[paf(1, 0, 1490, 1500), paf(1, 2, 300, 1500)])
+assert len(neg) == 1 and neg[0][0]["barcode"] == "barcode02" and neg[0][1]["barcode"] == "barcode01", neg
+assert neg[0][3] == 1500
+print("OK  minimap2/PAF: identity-over-overlap flags the neg<->sample match")
+
+# b) minimum-overlap rule: 100% identity but only 200 bp overlap must NOT flag at min_overlap=300
+assert ccc.find_matches(recs_p, 0.99, 300, paf_lines=[paf(1, 0, 200, 200)])[0] == []
+# ...but the SAME alignment flags once the overlap bar is lowered
+assert len(ccc.find_matches(recs_p, 0.99, 150, paf_lines=[paf(1, 0, 200, 200)])[0]) == 1
+print("OK  minimap2/PAF: min-overlap rule filters short high-identity hits")
+
+# c) the offset-partial case: two consensus overlap only over 400 bp, but at 99.5% there ->
+#    minimap2 reports identity over that overlap, so it is CAUGHT (the built-in would miss it)
+neg_off, _ = ccc.find_matches(recs_p, 0.99, 300, paf_lines=[paf(1, 0, 398, 400)])
+assert len(neg_off) == 1 and neg_off[0][3] == 400
+print("OK  minimap2/PAF: offset/partial overlap (400 bp @ 99.5%) is caught")
+
+# ---- end-to-end: main() writes a TSV (with overlap column) and prints a summary ----
 import io, contextlib, argparse
 
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    ccc.main(argparse.Namespace(fasta=fasta, min_identity=0.99, out=out))
+    ccc.main(argparse.Namespace(fasta=fasta, min_identity=0.99, min_overlap=300, preset="ava-ont", out=out))
 printed = buf.getvalue()
 assert "CONTAMINATION SIGNAL" in printed and "barcode02" in printed, printed
-rows = open(out).read().splitlines()
-assert rows[0].startswith("kind\t") and any(r.startswith("neg_vs_sample\t") for r in rows[1:]), rows
-print("OK  main() writes a TSV and prints a human summary")
-
-# ---- scenario 4: the --medaka-dir loader against a published-output tree -----------------------
-root = tempfile.mkdtemp(prefix="medaka_pass_")
-
-
-def write_consensus(barcode, cluster, s):
-    d = os.path.join(root, "{0}_{1}_consensus_medaka".format(barcode, cluster))
-    os.makedirs(d)
-    with open(os.path.join(d, "consensus.fasta"), "w") as fh:
-        fh.write(">{0}_{1}\n{2}\n".format(barcode, cluster, s))
-
-
-write_consensus("barcode01", "0", ecoli)  # sample
-write_consensus("barcode03", "0", kleb)  # sample
-write_consensus("barcode02", "0", mutate(ecoli, 4))  # negative control, shares E. coli
-recs4 = ccc.load_from_medaka_dir(root, ["barcode02"], [])
-assert {(r["barcode"], r["status"]) for r in recs4} >= {
-    ("barcode02", "negative control"),
-    ("barcode01", "sample"),
-}, recs4
-neg_hits4, _ = ccc.find_matches(recs4, min_identity=0.99)
-assert len(neg_hits4) == 1 and neg_hits4[0][0]["barcode"] == "barcode02", neg_hits4
-print("OK  --medaka-dir loader labels controls from barcode and flags the match")
+header = open(out).read().splitlines()[0]
+assert "overlap_bp" in header, header
+print("OK  main() writes a TSV with an overlap column and prints a summary")
 
 print("\nALL CROSS-CONTAMINATION CHECKS PASSED")

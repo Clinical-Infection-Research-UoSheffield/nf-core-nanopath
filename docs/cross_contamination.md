@@ -17,18 +17,28 @@ contamination or cross-contamination — no matter how each was named.
 
 `bin/consensus_cross_contamination.py`:
 
-1. Reads one combined FASTA whose headers encode the source: `>barcode|status|cluster|species`.
-2. For every **negative-control** consensus, finds its most similar **sample** consensus by
-   nucleotide identity (edlib infix alignment, so a partial consensus embedded in a longer one still
-   matches).
-3. Flags pairs at or above `--min-identity` (default **0.99**).
+1. Gathers all consensus, either from a combined FASTA (`--fasta`, headers `barcode|status|cluster|species`)
+   or straight from a run's medaka output (`--medaka-dir <outdir>/medaka_pass`, with the control
+   barcodes named via `--negative` / `--positive`).
+2. Compares them **all-vs-all with minimap2** (`-c -X -x ava-ont`), which reports identity over the
+   **aligned overlap** plus the overlap length.
+3. Flags a **negative-control** consensus against its best **sample** match when identity ≥
+   `--min-identity` (default **0.99**) **and** the overlap is ≥ `--min-overlap` bp (default **300**).
+   Scoring identity over the overlap (not the whole sequence) means two consensus covering different,
+   only-partially-overlapping stretches of 16S are compared fairly; the minimum-overlap rule stops a
+   short, highly-conserved stretch from raising a false flag.
 4. As a secondary signal, reports **sample↔sample** near-identical pairs from *different* barcodes
    (possible carryover / index hopping).
-5. Writes `cross_contamination.tsv` and prints a human summary.
+5. Writes `cross_contamination.tsv` (with an `overlap_bp` column) and prints a human summary.
 
-Tested on synthetic ~1500 bp sequences in `tests/cross_contamination_check.py`:
-a neg-control consensus 99.7% identical to a sample is flagged; an unrelated neg control is not;
-two patients sharing an organism surface as a sample↔sample pair.
+If minimap2 isn't on `PATH`, it falls back to a built-in edit-distance identity (edlib, or stdlib
+difflib) — install-free and fine for a quick look at full-length data, but it measures identity over
+the whole shorter sequence, so it can miss offset/partial overlaps (which is exactly why minimap2 is
+preferred).
+
+Tested in `tests/cross_contamination_check.py`: the built-in path on synthetic ~1500 bp sequences,
+and the minimap2 path via synthetic PAF (identity-over-overlap flags a match; the min-overlap rule
+filters short high-identity hits; a 400 bp @ 99.5% offset overlap is caught).
 
 ## Proposed pipeline integration
 
@@ -60,14 +70,16 @@ flagged neg↔sample pair could raise the negative-control light with a specific
 - **Genuine shared species.** Two patients truly infected with the same organism will match at the
   sequence level; that is why the neg control (which should be sterile) is the anchor. Sample↔sample
   matches are a softer "worth a look", not a hard fail.
-- **Threshold is a policy choice.** 0.99 is a starting point; validate against real runs with known
-  contamination before trusting it clinically.
-- **Dependency:** the check needs `edlib` (tiny, pip-installable) in the report/clustering container,
-  or swap the identity function for an external aligner (vsearch `--allpairs_global`, or minimap2).
+- **Thresholds are a policy choice.** identity 0.99 and overlap 300 bp are starting points; validate
+  against real runs (with and without known contamination) and tune before trusting them clinically.
+  The minimap2 `--preset` (default `ava-ont`) may also need checking for short 16S amplicons.
+- **Dependency:** the preferred path needs `minimap2` on `PATH` (add it to the module's container).
+  Without it the built-in edit-distance fallback runs, which does not handle offset/partial overlaps.
 
 ## To validate / next steps
 
-1. Run on real runs (including a known-contaminated one) and eyeball the flagged pairs + identities.
-2. Decide the threshold and whether sample↔sample pairs should be reported.
+1. Run on real runs (including a known-contaminated one) and eyeball the flagged pairs, identities,
+   and overlap lengths.
+2. Decide the identity/overlap thresholds and whether sample↔sample pairs should be reported.
 3. Wire the TSV into the report (raise the neg-control light with the matched sample + identity).
-4. Add `edlib` to the container (or switch to vsearch/minimap2) before enabling by default.
+4. Add `minimap2` to the container before enabling by default.
