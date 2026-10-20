@@ -18,6 +18,7 @@ process GENERATE_REPORTS {
     output:
     tuple val(meta), path("patient_report*.html"),   emit: report
     tuple val(meta), path("hit_details_*.csv"),       emit: hit_details_csv, optional: true
+    tuple val(meta), path("qc_*.json"),               emit: qc, optional: true
     path "versions.yml",                              emit: versions
 
     script:

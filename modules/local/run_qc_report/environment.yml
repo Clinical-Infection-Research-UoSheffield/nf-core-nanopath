@@ -1,0 +1,8 @@
+name: run_qc_report
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # run_qc_report.py is pure standard library -- only a python interpreter is needed.
+  - python=3.11

@@ -63,6 +63,7 @@ include { INPUT_CHECK } from '../subworkflows/local/input_check'
 // MODULE: Installed directly from nf-core/modules
 //
 include { CAT_FASTQS                  } from '../modules/local/cat_fastqs'
+include { AWAIT_RUN_REPORT            } from '../modules/local/await_run_report'
 include { PROCESS_METADATA            } from '../modules/local/process_metadata'
 include { FASTP                       } from '../modules/nf-core/fastp/main'
 include { FASTQC                      } from '../modules/nf-core/fastqc/main'
@@ -82,6 +83,7 @@ include { KRAKEN2_CLASSIFICATION      } from '../modules/local/kraken2_classific
 include { JOIN_RESULTS                } from '../modules/local/join_results'
 include { GET_ABUNDANCE               } from '../modules/local/get_abundance/main'
 include { GENERATE_REPORTS            } from '../modules/local/generate_reports/main'
+include { RUN_QC_REPORT               } from '../modules/local/run_qc_report/main'
 include { MULTIQC                     } from '../modules/nf-core/multiqc/main'
 include { CUSTOM_DUMPSOFTWAREVERSIONS } from '../modules/nf-core/custom/dumpsoftwareversions/main'
 
@@ -100,6 +102,24 @@ workflow NANOPATH {
 
     if (params.fastq_dir && params.fastq_dir != false) {
         ch_fastq_dir = Channel.fromPath(params.fastq_dir)
+
+        // Opt-in: launch the pipeline while the run is still going and wait for the run report
+        // (the run folder is the parent of fastq_pass). Gate the fastq dir on that signal so
+        // nothing starts until the run has finished and the reads are complete.
+        if (params.wait_for_run_report) {
+            AWAIT_RUN_REPORT( Channel.fromPath(file(params.fastq_dir).parent) )
+            ch_fastq_dir = ch_fastq_dir.combine(AWAIT_RUN_REPORT.out.ready).map { fq, ready -> fq }
+            // The report / final_summary only exist once the run has finished -- and they are also
+            // the files PROCESS_METADATA reads for run ID, start time and kit. The eager glob that
+            // built ch_metadata_files (near the top of this file) ran at launch, before the report
+            // existed, so in this mid-run mode it would be empty and the reports would lose their
+            // run identifier. Re-resolve those files AFTER the await signal so the metadata survives.
+            if (params.onGridion) {
+                ch_metadata_files = AWAIT_RUN_REPORT.out.ready.flatMap {
+                    file("${params.fastq_dir}/../report*.html") + file("${params.fastq_dir}/../final_summary*.txt")
+                }
+            }
+        }
 
         CAT_FASTQS (
             ch_fastq_dir,
@@ -355,6 +375,21 @@ workflow NANOPATH {
             ch_input,
             ch_db_names
         )
+
+        // Run-level QC report (always on whenever reporting runs): roll every barcode's
+        // qc_<barcode>.json into one sheet. The roster is built from INPUT_CHECK (the full
+        // samplesheet set) so barcodes that produced NO report appear as failure rows. The qc
+        // channel is collected and may be empty (nothing reported) -> ifEmpty([]) keeps it running.
+        ch_run_qc_roster = INPUT_CHECK.out.reads
+            .map { meta, reads -> "${meta.id}\t${meta.status ?: 'sample'}" }
+            .collectFile(name: 'run_qc_roster.tsv', newLine: true, sort: true)
+
+        RUN_QC_REPORT(
+            GENERATE_REPORTS.out.qc.map { meta, j -> j }.collect().ifEmpty([]),
+            ch_run_qc_roster,
+            ch_meta_final
+        )
+        ch_versions = ch_versions.mix(RUN_QC_REPORT.out.versions)
 
         // Fail loud: at the end, name every samplesheet barcode that produced NO report. This
         // catches all drop-out points in one place (0 reads after FASTP, the one-read clustering
