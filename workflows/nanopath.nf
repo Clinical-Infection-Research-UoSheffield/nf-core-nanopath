@@ -63,6 +63,7 @@ include { INPUT_CHECK } from '../subworkflows/local/input_check'
 // MODULE: Installed directly from nf-core/modules
 //
 include { CAT_FASTQS                  } from '../modules/local/cat_fastqs'
+include { AWAIT_RUN_REPORT            } from '../modules/local/await_run_report'
 include { PROCESS_METADATA            } from '../modules/local/process_metadata'
 include { FASTP                       } from '../modules/nf-core/fastp/main'
 include { FASTQC                      } from '../modules/nf-core/fastqc/main'
@@ -100,6 +101,24 @@ workflow NANOPATH {
 
     if (params.fastq_dir && params.fastq_dir != false) {
         ch_fastq_dir = Channel.fromPath(params.fastq_dir)
+
+        // Opt-in: launch the pipeline while the run is still going and wait for the run report
+        // (the run folder is the parent of fastq_pass). Gate the fastq dir on that signal so
+        // nothing starts until the run has finished and the reads are complete.
+        if (params.wait_for_run_report) {
+            AWAIT_RUN_REPORT( Channel.fromPath(file(params.fastq_dir).parent) )
+            ch_fastq_dir = ch_fastq_dir.combine(AWAIT_RUN_REPORT.out.ready).map { fq, ready -> fq }
+            // The report / final_summary only exist once the run has finished -- and they are also
+            // the files PROCESS_METADATA reads for run ID, start time and kit. The eager glob that
+            // built ch_metadata_files (near the top of this file) ran at launch, before the report
+            // existed, so in this mid-run mode it would be empty and the reports would lose their
+            // run identifier. Re-resolve those files AFTER the await signal so the metadata survives.
+            if (params.onGridion) {
+                ch_metadata_files = AWAIT_RUN_REPORT.out.ready.flatMap {
+                    file("${params.fastq_dir}/../report*.html") + file("${params.fastq_dir}/../final_summary*.txt")
+                }
+            }
+        }
 
         CAT_FASTQS (
             ch_fastq_dir,
