@@ -476,6 +476,7 @@ QC_SEQMATCH_CLOSE_AMBER = 0.02  # top1 - top2 (S_ab)
 QC_SEQMATCH_CLOSE_RED = 0.005
 POS_CONTROL_SPECIES = "Marinobacter nauticus"  # spiked into every sample
 SHOW_MIN_ABUNDANCE = 5.0  # only show clusters with >= this % of reads (unclassified clusters hidden too)
+DROPPED_ALARM_PCT = 30.0  # if unassembled/unidentified clusters exceed this % of reads, raise a red banner
 
 _WIN_TOKEN = {"BLAST": "blast", "SeqMatch": "seqmatch", "Kraken2 (LCA)": "kraken2"}
 _LEVEL_RANK = {"green": 0, "amber": 1, "red": 2}
@@ -1028,7 +1029,40 @@ def build_dropped_clusters_html(cluster_logs_dir, classified_ids, min_pct=SHOW_M
             n=len(dropped), r=dropped_reads, p=dropped_pct
         )
     )
-    return QC_CSS + '<div class="qc">' + note + table + "</div>"
+    # A large unidentified fraction means a major (possibly dominant) organism is missing from the
+    # report -- escalate that to a prominent red banner rather than a one-line note.
+    banner = ""
+    if dropped_pct >= DROPPED_ALARM_PCT:
+        banner = (
+            '<p style="background:#dc2626;color:#fff;font-weight:700;padding:10px 14px;'
+            'border-radius:6px;margin:8px 0">&#9888; {0:.0f}% of reads are in unassembled cluster(s) '
+            "that were NOT identified &mdash; a major organism may be missing from this report. "
+            "Interpret with caution and consider re-running this barcode.</p>".format(dropped_pct)
+        )
+    return QC_CSS + '<div class="qc">' + banner + note + table + "</div>"
+
+
+def _recompute_abundance(cluster_info, all_clusters):
+    """Recompute each cluster's rel_abundance against the TOTAL reads across ALL clusters the sample
+    formed -- including dropped/unassembled ones -- not just the classified clusters.
+
+    Without this, dropping a large cluster (e.g. a dominant cluster that failed to assemble) shrinks
+    the denominator to the survivors only, so a minor cluster can read as 39% when it is really ~1%
+    of the sample. Returns cluster_info unchanged when the all-cluster read counts aren't available.
+    """
+    total = sum(all_clusters.values()) if all_clusters else 0
+    if total <= 0:
+        return cluster_info
+    for cid, info in cluster_info.items():
+        reads = all_clusters.get(str(cid))
+        if reads is None:
+            try:
+                reads = float(info.get("reads") or 0)
+            except (TypeError, ValueError):
+                reads = 0
+        info["reads"] = int(reads)
+        info["rel_abundance"] = round(reads / total * 100, 1)
+    return cluster_info
 
 
 def add_qc_section(
@@ -1044,6 +1078,8 @@ def add_qc_section(
     if not clusters:
         return
     cluster_info = load_cluster_info(chosen_classifier)
+    # percentages must be of TOTAL reads (all clusters), not just the classified ones
+    cluster_info = _recompute_abundance(cluster_info, load_all_clusters(cluster_logs_dir))
     html = build_qc_html(clusters, cluster_info, racon_failed=racon_failed)
     if not html:
         return
@@ -1156,7 +1192,7 @@ def main(args):
             rest_df = pd.DataFrame(list(zip(left, right)), columns=["Sample Information", "Time Stamps"])
 
             # Generate the report
-            title = "Patient " + patient.iloc[0, 1] + " Report"
+            title = "Patient " + str(patient.iloc[0, 1]) + " Report"
             reprt = report.UoSReport(
                 title=title, report_template=args.report_template, about=False, style="UoS", logo=args.logo
             )
@@ -1195,7 +1231,7 @@ def main(args):
         rest_df = pd.DataFrame(list(zip(left, right)), columns=["Sample Information", "Time Stamps"])
 
         # Create the title for the report
-        title = "Patient " + metadata_table.iloc[0, 1] + " Report"
+        title = "Patient " + str(metadata_table.iloc[0, 1]) + " Report"
 
         if args.infile == "input.1":
             results_table = None
