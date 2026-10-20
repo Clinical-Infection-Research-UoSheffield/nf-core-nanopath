@@ -83,6 +83,7 @@ include { KRAKEN2_CLASSIFICATION      } from '../modules/local/kraken2_classific
 include { JOIN_RESULTS                } from '../modules/local/join_results'
 include { GET_ABUNDANCE               } from '../modules/local/get_abundance/main'
 include { GENERATE_REPORTS            } from '../modules/local/generate_reports/main'
+include { RUN_QC_REPORT               } from '../modules/local/run_qc_report/main'
 include { MULTIQC                     } from '../modules/nf-core/multiqc/main'
 include { CUSTOM_DUMPSOFTWAREVERSIONS } from '../modules/nf-core/custom/dumpsoftwareversions/main'
 
@@ -374,6 +375,21 @@ workflow NANOPATH {
             ch_input,
             ch_db_names
         )
+
+        // Run-level QC report (always on whenever reporting runs): roll every barcode's
+        // qc_<barcode>.json into one sheet. The roster is built from INPUT_CHECK (the full
+        // samplesheet set) so barcodes that produced NO report appear as failure rows. The qc
+        // channel is collected and may be empty (nothing reported) -> ifEmpty([]) keeps it running.
+        ch_run_qc_roster = INPUT_CHECK.out.reads
+            .map { meta, reads -> "${meta.id}\t${meta.status ?: 'sample'}" }
+            .collectFile(name: 'run_qc_roster.tsv', newLine: true, sort: true)
+
+        RUN_QC_REPORT(
+            GENERATE_REPORTS.out.qc.map { meta, j -> j }.collect().ifEmpty([]),
+            ch_run_qc_roster,
+            ch_meta_final
+        )
+        ch_versions = ch_versions.mix(RUN_QC_REPORT.out.versions)
 
         // Fail loud: at the end, name every samplesheet barcode that produced NO report. This
         // catches all drop-out points in one place (0 reads after FASTP, the one-read clustering
