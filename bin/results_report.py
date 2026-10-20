@@ -7,6 +7,7 @@ from aplanat import report
 import pandas as pd
 import os
 import glob
+import json
 import re
 import logging
 import datetime
@@ -1065,6 +1066,83 @@ def _recompute_abundance(cluster_info, all_clusters):
     return cluster_info
 
 
+def write_run_qc_json(args, metadata_table):
+    """Emit a compact, machine-readable per-barcode QC record for the run-level QC report.
+
+    Reuses the exact same derivations as the per-cluster QC section (cluster sizes from the
+    SPLIT_CLUSTERS logs, classified vs unassembled clusters, Racon-unpolished flags, abundance
+    recomputed against TOTAL reads). RUN_QC_REPORT collects one of these per barcode into a single
+    run sheet. Best-effort: a failure here must never break the patient report, so it never raises.
+    """
+    try:
+        all_clusters = load_all_clusters(args.cluster_logs)  # {cid: reads} -- every cluster formed
+        records = collect_cluster_records(args.hit_details)  # classified clusters (produced a consensus)
+        cluster_info = _recompute_abundance(load_cluster_info(args.chosen_classifier), all_clusters)
+        chosen = load_chosen_classifiers(args.chosen_classifier)  # cid -> winning classifier label
+        racon_failed = frozenset(c.strip() for c in args.racon_failed.split(",") if c.strip())
+
+        classified = {str(c) for c in records.keys()}
+        total = sum(all_clusters.values())
+        dropped_reads = sum(r for c, r in all_clusters.items() if str(c) not in classified)
+        pct_dropped = round(dropped_reads / total * 100.0, 1) if total else 0.0
+
+        def organism(cid):
+            recs = records.get(cid) or {}
+            lbl = (chosen.get(str(cid)) or "").lower()
+            pref = [t for t in ("blast", "seqmatch", "kraken2") if t in lbl]
+            for t in pref + ["blast", "seqmatch", "kraken2"]:
+                r = _rank1(recs.get(t))
+                if r and r.get("species"):
+                    return r["species"]
+            return ""
+
+        detail = []
+        for cid in sorted(all_clusters, key=_cluster_sort_key):
+            reads = all_clusters[cid]
+            is_cls = str(cid) in classified
+            detail.append(
+                {
+                    "cluster": str(cid),
+                    "reads": int(reads),
+                    "pct": round(reads / total * 100.0, 1) if total else 0.0,
+                    "fate": "classified" if is_cls else "unassembled",
+                    "organism": organism(cid) if is_cls else "",
+                    "unpolished": str(cid) in racon_failed,
+                }
+            )
+
+        top_org, top_pct = "", ""
+        try:
+            if args.infile not in ("input.1", "unknown") and os.path.isfile(args.infile):
+                ab = read_abundance_results(args.infile)
+                if len(ab):
+                    top_org, top_pct = str(ab.iloc[0, 0]), float(ab.iloc[0, 1])
+        except Exception:
+            logger.exception("run QC json: abundance read failed")
+
+        rec = {
+            "barcode": args.barcode,
+            "specimen": str(metadata_table.iloc[1, 1]) if metadata_table is not None else "",
+            "status": args.status,
+            "reads_qc": _qc_num(args.reads_count),
+            "reads_clustered": int(total),
+            "clustering_cap": _qc_num(args.clustering_size),
+            "clusters_formed": len(all_clusters),
+            "clusters_classified": len(classified & {str(c) for c in all_clusters}),
+            "clusters_failed": len([c for c in all_clusters if str(c) not in classified]),
+            "clusters_unpolished": len([c for c in racon_failed if c in classified]),
+            "reads_dropped": int(dropped_reads),
+            "pct_reads_dropped": pct_dropped,
+            "top_organism": top_org,
+            "top_abundance_pct": top_pct,
+            "clusters": detail,
+        }
+        with open("qc_{0}.json".format(args.barcode), "w") as fh:
+            json.dump(rec, fh)
+    except Exception:
+        logger.exception("run QC json emit failed for %s", getattr(args, "barcode", "?"))
+
+
 def add_qc_section(
     reprt,
     hit_details_dir,
@@ -1297,6 +1375,10 @@ def main(args):
             cluster_logs_dir=args.cluster_logs,
             racon_failed=racon_failed,
         )
+
+        # Also emit a compact per-barcode QC record for the run-level QC report (RUN_QC_REPORT
+        # collects one of these per barcode). Best-effort -- never blocks the patient report.
+        write_run_qc_json(args, metadata_table)
 
         # Full machine-readable record: top hits for every classifier, all clusters
         write_hit_details_csv(
